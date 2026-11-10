@@ -50,10 +50,10 @@ def detect_pivots(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
-# HELPER: Full Timeframe Structural Analysis (Bias, Zone, EQ, Last Event)
+# HELPER: Full Timeframe Structural Analysis & Event Tracking
 # ─────────────────────────────────────────────────────────────────
 def get_tf_full_analysis(df: pd.DataFrame, length: int):
-    """Computes bias, zone, equilibrium, and the last structural event for any timeframe."""
+    """Computes independent bias, zone, equilibrium, and last structural event for any timeframe."""
     if len(df) < length * 2 + 1:
         return {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Insufficient Data", "dealing_high": np.nan, "dealing_low": np.nan}
 
@@ -68,6 +68,7 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
     maj_v_broken = False
 
     last_event = "No Event Yet"
+    bias = 0
 
     for i in range(length, len(df)):
         if not np.isnan(raw_maj_a.iloc[i]):
@@ -80,27 +81,32 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
             last_maj_v_idx = i
             maj_v_broken = False
 
+        # Evaluate Structure Break / Sweep on Highs
         if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
                     maj_a_broken = True
                     last_event = "BOS Bullish (Body Close)"
+                    bias = 1
                 else:
-                    last_event = "Sweep High (Wick)"
+                    last_event = "Liquidity Sweep High (Wick)"
 
+        # Evaluate Structure Break / Sweep on Lows
         if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
                     maj_v_broken = True
                     last_event = "BOS Bearish (Body Close)"
+                    bias = -1
                 else:
-                    last_event = "Sweep Low (Wick)"
+                    last_event = "Liquidity Sweep Low (Wick)"
 
-    bias = 0
-    if not np.isnan(last_maj_a_val) and df["Close"].iloc[-1] > last_maj_a_val:
-        bias = 1
-    if not np.isnan(last_maj_v_val) and df["Close"].iloc[-1] < last_maj_v_val:
-        bias = -1
+    # Fallback bias determination using last close vs pivot if no mid-range break occurred
+    if bias == 0 and not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val):
+        if df["Close"].iloc[-1] > last_maj_a_val:
+            bias = 1
+        elif df["Close"].iloc[-1] < last_maj_v_val:
+            bias = -1
 
     eq = (last_maj_a_val + last_maj_v_val) / 2 if (not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val)) else np.nan
     zone = 0 if np.isnan(eq) else (1 if df["Close"].iloc[-1] > eq else -1)
@@ -352,7 +358,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         )
 
     fig.update_layout(
-        title="ICT Structure & Liquidity Sweep Engine [v6]",
+        title="ICT Structure Engine [v6]",
         xaxis_title="Date", yaxis_title="Price",
         template="plotly_dark", height=650,
         xaxis_rangeslider_visible=False,
@@ -361,7 +367,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD (With Multi-Timeframe Event Matrix)
+# BUILD DASHBOARD (With Multi-Timeframe Event Matrix - 1M, 1W, 1D, 240)
 # ─────────────────────────────────────────────────────────────────
 def render_dashboard(result: dict, tf_results: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
@@ -388,16 +394,13 @@ def render_dashboard(result: dict, tf_results: dict, text_size: str):
         with c2:
             st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{value}</div>", unsafe_allow_html=True)
 
-    # Multi-Timeframe Structure & Bias Matrix
+    # Multi-Timeframe Structure & Bias Matrix (1M, 1W, 1D, 240)
     st.markdown(f"<div style='font-size:{fs+2}px; font-weight:bold; margin-top:12px;'>Multi-Timeframe Structure & Bias Alignment</div>", unsafe_allow_html=True)
     
-    tf_headers = ["Timeframe", "Bias", "Zone", "Last Structural Event"]
-    
-    # Build clean HTML table for timeframes
     table_html = "<table style='width:100%; font-family:monospace; font-size:{}px; border-collapse:collapse;'>".format(fs)
-    table_html += "<tr style='border-bottom: 1px solid #444; text-align:left;'><th>TF</th><th>Bias</th><th>Zone</th><th>Last Structure Event</th></tr>"
+    table_html += "<tr style='border-bottom: 1px solid #444; text-align:left;'><th>TF</th><th>Bias</th><th>Zone</th><th>Last Structural Event</th></tr>"
     
-    for tf_label in ["1M", "1W", "1D", "240", "60", "15"]:
+    for tf_label in ["1M", "1W", "1D", "240"]:
         res = tf_results.get(tf_label, {})
         bias_val = res.get("bias", 0)
         bias_str = "BULLISH 🟢" if bias_val == 1 else ("BEARISH 🔴" if bias_val == -1 else "NEUTRAL ⚪")
@@ -452,8 +455,6 @@ def main():
     w_len = st.sidebar.slider("Weekly Strength", 1, 12, 1)
     d_len = st.sidebar.slider("Daily Strength", 1, 20, 1)
     h4_len = st.sidebar.slider("H4 Strength", 1, 20, 1)
-    h1_len = st.sidebar.slider("H1 Strength", 1, 20, 1)
-    m15_len = st.sidebar.slider("M15 Strength", 1, 20, 1)
 
     st.sidebar.subheader("Pivot & Sweep Settings")
     major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
@@ -480,7 +481,7 @@ def main():
     n = len(df)
     st.info(f"Showing {n} bars of {ticker} ({selected_interval_label}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
-    # Compute multi-timeframe full analysis
+    # Compute multi-timeframe full analysis (1M, 1W, 1D, 240)
     with st.spinner("Computing multi-timeframe analysis..."):
         tf_results = {}
         tf_configs = [
@@ -488,8 +489,6 @@ def main():
             ("1W", "1wk", w_len),
             ("1D", "1d", d_len),
             ("240", "4h", h4_len),
-            ("60", "1h", h1_len),
-            ("15", "15m", m15_len),
         ]
 
         for tf_label, tf_interval, tf_len in tf_configs:
@@ -505,15 +504,12 @@ def main():
     w_bias = tf_results.get("1W", {}).get("bias", 0)
     d_bias = tf_results.get("1D", {}).get("bias", 0)
     h4_zone = tf_results.get("240", {}).get("zone", 0)
-    h1_zone = tf_results.get("60", {}).get("zone", 0)
 
     macroWeeklyH4Bull = (w_bias == 1 and h4_zone == -1)
     macroWeeklyH4Bear = (w_bias == -1 and h4_zone == 1)
-    macroDailyH1Bull = (d_bias == 1 and h1_zone == -1)
-    macroDailyH1Bear = (d_bias == -1 and h1_zone == 1)
 
-    is_bull_aligned = macroWeeklyH4Bull or macroDailyH1Bull
-    is_bear_aligned = macroWeeklyH4Bear or macroDailyH1Bear
+    is_bull_aligned = macroWeeklyH4Bull
+    is_bear_aligned = macroWeeklyH4Bear
 
     sweep_high_flags, sweep_low_flags = compute_sweep_flags(df, lookback, is_bull_aligned, is_bear_aligned)
 
