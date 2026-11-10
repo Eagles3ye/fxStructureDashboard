@@ -428,7 +428,7 @@ def main():
     predefined_tickers = [
         "BTC-USD", "ETH-USD", "SOL-USD", 
         "EURUSD=X", "GBPUSD=X", "USDJPY=X", 
-        "GC=F", "CL=F", "AAPL", "NVDA", "TSLA", "MSFT", "CUSTOM"
+        "Gold (GC=F)": "GC=F", "Silver (SI=F)": "SI=F", "Copper :CL=F", "AAPL", "NVDA", "TSLA", "MSFT", "CUSTOM"
     ]
     
     selected_ticker_option = st.sidebar.selectbox("Select Ticker Symbol", predefined_tickers, index=0)
