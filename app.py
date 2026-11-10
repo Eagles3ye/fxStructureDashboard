@@ -166,7 +166,6 @@ eq_list = []
 zones = []
 event_list = []
 
-# Storage for chart lines (BOS & Sweeps)
 chart_lines = []
 
 last_maj_a = np.nan
@@ -200,14 +199,12 @@ for i in range(len(df)):
     dealing_low = pl
     maj_v_broken = False
 
-  # Check Break of Structure (BOS) or Sweeps
   if not np.isnan(last_maj_a) and not maj_a_broken and high_val > last_maj_a:
     start_time = df.index[last_maj_a_idx]
     if close_val > last_maj_a:
       maj_a_broken = True
       current_event = "BOS Bullish (Body Close)"
       current_target = "Target: Next External High / FVG"
-      # BOS Line: Solid, Weight 2
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -219,7 +216,6 @@ for i in range(len(df)):
     else:
       current_event = "LIQUIDITY SWEEP HIGH (Wick)"
       current_target = "Target: EQ (50%) -> Range Low"
-      # Sweep Line: Dotted/Dashed, Weight 1
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -235,7 +231,6 @@ for i in range(len(df)):
       maj_v_broken = True
       current_event = "BOS Bearish (Body Close)"
       current_target = "Target: Next External Low / FVG"
-      # BOS Line: Solid, Weight 2
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -247,7 +242,6 @@ for i in range(len(df)):
     else:
       current_event = "LIQUIDITY SWEEP LOW (Wick)"
       current_target = "Target: EQ (50%) -> Range High"
-      # Sweep Line: Dotted/Dashed, Weight 1
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -289,8 +283,8 @@ curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 
 
-# --- Macro Alignment Context ---
-def get_h4_zone_and_daily_bias(sym):
+# --- Macro Alignment Context (Fixed with Active Pivot-Based H4 Dealing Range) ---
+def get_h4_zone_and_daily_bias(sym, length=3):
   df_d = yf.download(
       sym, period="1y", interval="1d", progress=False, threads=False
   )
@@ -315,22 +309,48 @@ def get_h4_zone_and_daily_bias(sym):
         .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
         .dropna()
     )
-    if not df_h4.empty:
-      h4_high = df_h4["High"].max()
-      h4_low = df_h4["Low"].min()
-      h4_eq = (h4_high + h4_low) / 2
-      h4_close = df_h4["Close"].iloc[-1]
-      zone_str = (
-          "PREM"
-          if h4_close > h4_eq
-          else "DISC" if h4_close < h4_eq else "EQ"
-      )
-      h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
+
+    if len(df_h4) > length * 2:
+      highs = df_h4["High"].values
+      lows = df_h4["Low"].values
+      closes = df_h4["Close"].values
+      n = len(df_h4)
+
+      active_hi = np.nan
+      active_lo = np.nan
+
+      # Simulate rolling pivot state tracker for H4 dealing range
+      for i in range(length, n - length):
+        is_hi = True
+        for j in range(1, length + 1):
+          if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
+            is_hi = False
+            break
+        if is_hi:
+          active_hi = highs[i]
+
+        is_lo = True
+        for j in range(1, length + 1):
+          if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
+            is_lo = False
+            break
+        if is_lo:
+          active_lo = lows[i]
+
+      if not np.isnan(active_hi) and not np.isnan(active_lo):
+        h4_eq = (active_hi + active_lo) / 2
+        h4_close = closes[-1]
+        zone_str = (
+            "PREM"
+            if h4_close > h4_eq
+            else "DISC" if h4_close < h4_eq else "EQ"
+        )
+        h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
 
   return d_bias, h4_txt
 
 
-d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker)
+d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker, major_len)
 
 if timeframe in ["1D", "D"]:
   macro_title = "Macro (Daily Trend / H4 Zone)"
@@ -397,7 +417,6 @@ st.subheader(
 
 fig = go.Figure()
 
-# 1. Main Price Series
 if chart_style == "Candlestick":
   fig.add_trace(
       go.Candlestick(
@@ -420,7 +439,7 @@ else:
       )
   )
 
-# 2. Major Pivot Dots
+# Major Pivot Dots
 fig.add_trace(
     go.Scatter(
         x=df.index[df["PivotHigh"].notna()],
@@ -441,7 +460,7 @@ fig.add_trace(
     )
 )
 
-# 3. Draw BOS & Sweep Lines dynamically onto the chart
+# BOS & Sweep Lines
 for line in chart_lines:
   fig.add_shape(
       type="line",
@@ -454,7 +473,7 @@ for line in chart_lines:
       ),
   )
 
-# 4. Equilibrium & Dealing Range Lines
+# Lines
 if not np.isnan(curr_eq):
   fig.add_hline(
       y=curr_eq,
@@ -479,7 +498,6 @@ if not np.isnan(curr_dl):
       annotation_text=f"Dealing Low: {curr_dl:.4f}",
   )
 
-# Layout configurations (Pan default, scroll zoom, and mobile toolbar)
 fig.update_layout(
     template="plotly_dark",
     xaxis_title="Time",
