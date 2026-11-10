@@ -50,71 +50,125 @@ def detect_pivots(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
-# HELPER: Synchronized Timeframe Structural Analysis & Event Tracking
+# CORE ENGINE: Unified Active Dealing Range & Structure State
 # ─────────────────────────────────────────────────────────────────
-def get_tf_full_analysis(df: pd.DataFrame, length: int):
-    """Computes synchronized bias, zone, equilibrium, and active structural event for any timeframe."""
+def compute_ict_structure(df: pd.DataFrame, length: int):
+    """
+    Computes active dealing range, equilibrium, bias, and the 
+    chronologically latest structural event (BOS or Sweep).
+    """
     if len(df) < length * 2 + 1:
-        return {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Insufficient Data", "dealing_high": np.nan, "dealing_low": np.nan}
+        return None
 
     raw_maj_a, raw_maj_v = detect_pivots(df, length)
 
     last_maj_a_val = np.nan
     last_maj_a_idx = -1
-    maj_a_broken = False
-
     last_maj_v_val = np.nan
     last_maj_v_idx = -1
-    maj_v_broken = False
 
-    last_event = "Range Bounded / Waiting"
-    bias = 0
-
+    # Find latest valid pivot points
     for i in range(length, len(df)):
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
             last_maj_a_idx = i
-            maj_a_broken = False
-
         if not np.isnan(raw_maj_v.iloc[i]):
             last_maj_v_val = raw_maj_v.iloc[i]
             last_maj_v_idx = i
-            maj_v_broken = False
 
+    last_event = "Range Bounded / Waiting"
+    next_target = "Waiting for Event..."
+    events_log = []
+
+    active_high_broken = False
+    active_low_broken = False
+
+    scan_start = max(length, min(last_maj_a_idx if last_maj_a_idx != -1 else 0, last_maj_v_idx if last_maj_v_idx != -1 else 0))
+
+    for i in range(scan_start, len(df)):
         # Evaluate High Breaks / Sweeps
-        if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
+        if not np.isnan(last_maj_a_val) and i > last_maj_a_idx:
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
-                    maj_a_broken = True
+                    active_high_broken = True
+                    active_low_broken = False
                     last_event = "BOS Bullish (Body Close)"
-                    bias = 1
+                    next_target = "Target: Next External High / FVG"
+                    events_log.append({
+                        "type": "bos_bull", "idx": i,
+                        "price": last_maj_a_val, "label": "BOS",
+                        "line_x1": last_maj_a_idx, "line_x2": i,
+                        "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
+                    })
                 else:
                     last_event = "LIQUIDITY SWEEP HIGH (Wick)"
+                    next_target = "Target: EQ (50%) -> Range Low"
+                    events_log.append({
+                        "type": "sweep_high", "idx": i,
+                        "price": last_maj_a_val, "label": "SWEEP",
+                        "line_x1": last_maj_a_idx, "line_x2": i,
+                        "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
+                    })
 
         # Evaluate Low Breaks / Sweeps
-        if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
+        if not np.isnan(last_maj_v_val) and i > last_maj_v_idx:
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
-                    maj_v_broken = True
+                    active_low_broken = True
+                    active_high_broken = False
                     last_event = "BOS Bearish (Body Close)"
-                    bias = -1
+                    next_target = "Target: Next External Low / FVG"
+                    events_log.append({
+                        "type": "bos_bear", "idx": i,
+                        "price": last_maj_v_val, "label": "BOS",
+                        "line_x1": last_maj_v_idx, "line_x2": i,
+                        "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
+                    })
                 else:
                     last_event = "LIQUIDITY SWEEP LOW (Wick)"
+                    next_target = "Target: EQ (50%) -> Range High"
+                    events_log.append({
+                        "type": "sweep_low", "idx": i,
+                        "price": last_maj_v_val, "label": "SWEEP",
+                        "line_x1": last_maj_v_idx, "line_x2": i,
+                        "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
+                    })
 
-    # Fallback bias alignment based on price relative to EQ if no recent break occurred
-    eq = (last_maj_a_val + last_maj_v_val) / 2 if (not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val)) else np.nan
-    zone = 0 if np.isnan(eq) else (1 if df["Close"].iloc[-1] > eq else -1)
+    dealing_high = last_maj_a_val if not np.isnan(last_maj_a_val) else np.nan
+    dealing_low = last_maj_v_val if not np.isnan(last_maj_v_val) else np.nan
+    eq_price = (dealing_high + dealing_low) / 2 if (not np.isnan(dealing_high) and not np.isnan(dealing_low)) else np.nan
 
-    if bias == 0 and not np.isnan(eq):
-        bias = 1 if df["Close"].iloc[-1] > eq else -1
+    bias = 0
+    if not np.isnan(eq_price):
+        if df["Close"].iloc[-1] > eq_price:
+            bias = 1
+            active_zone = "PREMIUM (Above 50% EQ)"
+        else:
+            bias = -1
+            active_zone = "DISCOUNT (Below 50% EQ)"
+    else:
+        active_zone = "N/A"
+
+    if "BOS Bullish" in last_event:
+        bias = 1
+    elif "BOS Bearish" in last_event:
+        bias = -1
 
     return {
+        "events": events_log,
+        "dealing_high": dealing_high,
+        "dealing_low": dealing_low,
+        "eq_price": eq_price,
+        "active_zone": active_zone,
+        "zone": 1 if active_zone.startswith("PREMIUM") else (-1 if active_zone.startswith("DISCOUNT") else 0),
         "bias": bias,
-        "zone": zone,
-        "eq": eq,
         "last_event": last_event,
-        "dealing_high": last_maj_a_val,
-        "dealing_low": last_maj_v_val
+        "next_target": next_target,
+        "active_dr_high_bar": last_maj_a_idx,
+        "active_dr_low_bar": last_maj_v_idx,
+        "raw_maj_a": raw_maj_a,
+        "raw_maj_v": raw_maj_v,
+        "df": df,
     }
 
 
@@ -142,118 +196,6 @@ def compute_sweep_flags(df: pd.DataFrame, lookback: int,
         if is_bull_aligned and df["Low"].iloc[i] < prev_low and edge_low:
             sweep_low_flags[i] = True
     return sweep_high_flags, sweep_low_flags
-
-
-# ─────────────────────────────────────────────────────────────────
-# MAIN ANALYSIS ENGINE (Primary Chart)
-# ─────────────────────────────────────────────────────────────────
-def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
-                sweep_high_flags: dict, sweep_low_flags: dict):
-    n = len(df)
-    if n < major_len * 2 + 1:
-        return None
-
-    raw_maj_a, raw_maj_v = detect_pivots(df, major_len)
-
-    last_maj_a_val = np.nan
-    last_maj_a_idx = -1
-    maj_a_broken = False
-    active_dr_high_bar = -1
-
-    last_maj_v_val = np.nan
-    last_maj_v_idx = -1
-    maj_v_broken = False
-    active_dr_low_bar = -1
-
-    last_event = "Initializing Structure..."
-    next_target = "Waiting for Event..."
-    events_log = []
-
-    for i in range(major_len, n):
-        if not np.isnan(raw_maj_a.iloc[i]):
-            last_maj_a_val = raw_maj_a.iloc[i]
-            last_maj_a_idx = i
-            maj_a_broken = False
-            active_dr_high_bar = i
-
-        if not np.isnan(raw_maj_v.iloc[i]):
-            last_maj_v_val = raw_maj_v.iloc[i]
-            last_maj_v_idx = i
-            maj_v_broken = False
-            active_dr_low_bar = i
-
-        if (not np.isnan(last_maj_a_val) and not maj_a_broken
-                and last_maj_a_idx >= 0 and i > last_maj_a_idx):
-            if df["High"].iloc[i] > last_maj_a_val:
-                if df["Close"].iloc[i] > last_maj_a_val:
-                    maj_a_broken = True
-                    last_event = "BOS Bullish (Body Close)"
-                    next_target = "Target: Next External High / FVG"
-                    events_log.append({
-                        "type": "bos_bull", "idx": i,
-                        "price": last_maj_a_val, "label": "BOS",
-                        "line_x1": last_maj_a_idx, "line_x2": i,
-                        "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
-                    })
-                else:
-                    last_event = "LIQUIDITY SWEEP HIGH (Wick)"
-                    next_target = "Target: EQ (50%) -> Range Low"
-                    events_log.append({
-                        "type": "sweep_high", "idx": i,
-                        "price": last_maj_a_val, "label": "SWEEP",
-                        "line_x1": last_maj_a_idx, "line_x2": i,
-                        "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
-                    })
-
-        if (not np.isnan(last_maj_v_val) and not maj_v_broken
-                and last_maj_v_idx >= 0 and i > last_maj_v_idx):
-            if df["Low"].iloc[i] < last_maj_v_val:
-                if df["Close"].iloc[i] < last_maj_v_val:
-                    maj_v_broken = True
-                    last_event = "BOS Bearish (Body Close)"
-                    next_target = "Target: Next External Low / FVG"
-                    events_log.append({
-                        "type": "bos_bear", "idx": i,
-                        "price": last_maj_v_val, "label": "BOS",
-                        "line_x1": last_maj_v_idx, "line_x2": i,
-                        "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
-                    })
-                else:
-                    last_event = "LIQUIDITY SWEEP LOW (Wick)"
-                    next_target = "Target: EQ (50%) -> Range High"
-                    events_log.append({
-                        "type": "sweep_low", "idx": i,
-                        "price": last_maj_v_val, "label": "SWEEP",
-                        "line_x1": last_maj_v_idx, "line_x2": i,
-                        "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
-                    })
-
-    dealing_high = last_maj_a_val if not np.isnan(last_maj_a_val) else np.nan
-    dealing_low = last_maj_v_val if not np.isnan(last_maj_v_val) else np.nan
-
-    eq_price = (dealing_high + dealing_low) / 2 if (not np.isnan(dealing_high) and not np.isnan(dealing_low)) else np.nan
-
-    if not np.isnan(eq_price):
-        active_zone = "PREMIUM (Above 50% EQ)" if df["Close"].iloc[-1] > eq_price else "DISCOUNT (Below 50% EQ)"
-    else:
-        active_zone = "N/A"
-
-    return {
-        "events": events_log,
-        "dealing_high": dealing_high,
-        "dealing_low": dealing_low,
-        "eq_price": eq_price,
-        "active_zone": active_zone,
-        "last_event": last_event,
-        "next_target": next_target,
-        "active_dr_high_bar": active_dr_high_bar,
-        "active_dr_low_bar": active_dr_low_bar,
-        "raw_maj_a": raw_maj_a,
-        "raw_maj_v": raw_maj_v,
-        "sweep_high_flags": sweep_high_flags,
-        "sweep_low_flags": sweep_low_flags,
-        "df": df,
-    }
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -476,6 +418,7 @@ def main():
     n = len(df)
     st.info(f"Showing {n} bars of {ticker} ({selected_interval_label}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
+    # Compute multi-timeframe analysis using the unified core engine
     with st.spinner("Computing multi-timeframe analysis..."):
         tf_results = {}
         tf_configs = [
@@ -489,7 +432,8 @@ def main():
             try:
                 tf_period = "max" if tf_label in ["1M", "1W", "1D"] else "2y"
                 tdf = fetch_ohlc(ticker, period=tf_period, interval=tf_interval)
-                tf_results[tf_label] = get_tf_full_analysis(tdf, tf_len)
+                res = compute_ict_structure(tdf, tf_len)
+                tf_results[tf_label] = res if res else {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Insufficient Data"}
             except Exception:
                 tf_results[tf_label] = {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Error"}
 
@@ -506,7 +450,7 @@ def main():
 
     sweep_high_flags, sweep_low_flags = compute_sweep_flags(df, lookback, is_bull_aligned, is_bear_aligned)
 
-    result = analyze_ict(df, major_len, lookback, sweep_high_flags, sweep_low_flags)
+    result = compute_ict_structure(df, major_len)
 
     if result is None:
         st.warning("Not enough data for the selected major swing length. Try a smaller length or more data.")
