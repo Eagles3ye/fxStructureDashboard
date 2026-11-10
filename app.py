@@ -15,12 +15,10 @@ st.set_page_config(
 st.sidebar.header("Engine Settings")
 ticker = st.sidebar.text_input("Asset Ticker", value="USDCAD=X")
 timeframe = st.sidebar.selectbox(
-    "Chart Timeframe", ["1h", "1d", "4h"], index=0
-)  # Note: yfinance uses '1h', '1d'
-major_len = st.sidebar.slider("Major Swing Length", minval=2, maxval=10, value=3)
-lookback = st.sidebar.slider(
-    "Sweep Lookback Bars", minval=1, maxval=20, value=5
+    "Chart Timeframe", ["1h", "4h", "1d"], index=0
 )
+major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
+lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
 
 # Color configurations
 BULL_COLOR = "#26a69a"  # Green / Discount
@@ -33,7 +31,6 @@ DR_LOW_COLOR = "#42a5f5"  # Blue
 # --- Data Fetching & Resampling ---
 @st.cache_data(ttl=300)
 def load_data(symbol, tf):
-  # Map intervals to yfinance parameters
   interval_map = {"1h": "60m", "4h": "240m", "1d": "1d"}
   yf_interval = interval_map.get(tf, "60m")
   period = "60d" if yf_interval in ["60m", "240m"] else "1y"
@@ -42,7 +39,6 @@ def load_data(symbol, tf):
   if df.empty:
     return df
 
-  # Handle multi-index columns if returned by newer yfinance versions
   if isinstance(df.columns, pd.MultiIndex):
     df.columns = df.columns.get_level_values(0)
 
@@ -60,7 +56,7 @@ if df.empty:
   st.stop()
 
 
-# --- Pivot Detection Function (Equivalent to ta.pivothigh / pivotlow) ---
+# --- Pivot Detection Function ---
 def compute_pivots(data, length):
   highs = data["High"].values
   lows = data["Low"].values
@@ -70,20 +66,18 @@ def compute_pivots(data, length):
   pivot_lows = np.full(n, np.nan)
 
   for i in range(length, n - length):
-    # Check pivot high
     is_hi = True
     for j in range(1, length + 1):
       if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
-        is_hi = false
+        is_hi = False
         break
     if is_hi:
       pivot_highs[i] = highs[i]
 
-    # Check pivot low
     is_lo = True
     for j in range(1, length + 1):
       if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
-        is_lo = false
+        is_lo = False
         break
     if is_lo:
       pivot_lows[i] = lows[i]
@@ -95,10 +89,7 @@ def compute_pivots(data, length):
 
 df = compute_pivots(df, major_len)
 
-
 # --- State Tracking & Dealing Range Logic ---
-last_maj_a = np.nan
-last_maj_v = np.nan
 dealing_high = np.nan
 dealing_low = np.nan
 
@@ -106,8 +97,6 @@ d_highs = []
 d_lows = []
 eq_list = []
 zones = []
-events = []
-targets = []
 
 last_event = "Initializing Structure..."
 next_target = "Waiting for Event..."
@@ -116,25 +105,19 @@ for i in range(len(df)):
   ph = df["PivotHigh"].iloc[i]
   pl = df["PivotLow"].iloc[i]
   close_val = df["Close"].iloc[i]
-  high_val = df["High"].iloc[i]
-  low_val = df["Low"].iloc[i]
 
   if not np.isnan(ph):
-    last_maj_a = ph
     dealing_high = ph
 
   if not np.isnan(pl):
-    last_maj_v = pl
     dealing_low = pl
 
-  # Calculate EQ
   eq = (
       (dealing_high + dealing_low) / 2
       if not (np.isnan(dealing_high) or np.isnan(dealing_low))
       else np.nan
   )
 
-  # Zone evaluation
   if np.isnan(eq):
     zone = "N/A"
   elif close_val > eq:
@@ -157,8 +140,7 @@ curr_dl = df["DealingLow"].iloc[-1]
 curr_eq = df["EQ"].iloc[-1]
 curr_zone = df["Zone"].iloc[-1]
 
-# --- Multi-Timeframe Resampling for Macro Alignment ---
-# Resample to Daily for macro trend check
+# --- Macro Alignment Context ---
 df_daily = (
     yf.download(ticker, period="6mo", interval="1d", progress=False)
     if timeframe != "1d"
@@ -167,7 +149,6 @@ df_daily = (
 if isinstance(df_daily.columns, pd.MultiIndex):
   df_daily.columns = df_daily.columns.get_level_values(0)
 
-# Simple Daily bias calculation (Close vs 50 EMA or previous swing)
 if not df_daily.empty:
   df_daily["EMA50"] = df_daily["Close"].ewm(span=50).mean()
   daily_bias = (
@@ -178,7 +159,7 @@ if not df_daily.empty:
 else:
   daily_bias = "NEUTRAL"
 
-macro_title = f"Macro (Daily Trend / Zone)"
+macro_title = "Macro (Daily Trend / Zone)"
 macro_text = f"D: {daily_bias} | Zone: {curr_zone.split(' ')[0]}"
 
 # --- Dashboard UI Layout ---
@@ -187,22 +168,20 @@ st.markdown(
     f"**Asset:** `{ticker}` | **Timeframe:** `{timeframe.upper()}` | **Engine Status:** `Active`"
 )
 
-# Metric Summary Cards (Top Row)
+# Metric Summary Cards
 col1, col2, col3 = st.columns(3)
 col1.metric(
-    "Dealing High",
-    f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A",
-    delta_color="inverse",
+    "Dealing High", f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A"
 )
 col2.metric(
     "Equilibrium (50% EQ)",
     f"{curr_eq:.4f}" if not np.isnan(curr_eq) else "N/A",
 )
 col3.metric(
-    "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "normal"
+    "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A"
 )
 
-# Main Dashboard Table (Matching your Pine Script Table layout)
+# Main Dashboard Table
 st.subheader("📊 Engine Dashboard Summary")
 dashboard_data = {
     "Metric / Value": [
@@ -230,8 +209,6 @@ st.table(pd.DataFrame(dashboard_data))
 st.subheader("🕯️ Price Chart & Structure Overlay")
 
 fig = go.Figure()
-
-# Candlestick Chart
 fig.add_trace(
     go.Candlestick(
         x=df.index,
@@ -243,7 +220,6 @@ fig.add_trace(
     )
 )
 
-# Plot Equilibrium Line
 if not np.isnan(curr_eq):
   fig.add_hline(
       y=curr_eq,
@@ -252,8 +228,6 @@ if not np.isnan(curr_eq):
       annotation_text="50% EQ",
       annotation_position="bottom right",
   )
-
-# Plot Dealing High & Low Lines if active
 if not np.isnan(curr_dh):
   fig.add_hline(
       y=curr_dh,
