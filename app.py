@@ -312,8 +312,9 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines & labels (TradingView style bounded segments)
+    # BOS / Sweep lines & labels using your explicit chart_lines loop structure
     if show_bos_lines:
+        chart_lines = []
         for ev in result["events"]:
             idx = ev["idx"]
             price = ev["price"]
@@ -327,14 +328,15 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
             line_dash = "solid" if is_bos else "dash"
             line_width = 2 if is_bos else 1
             
-            # Draw bounded line segment from the event candle index to current bar
-            fig.add_shape(
-                type="line",
-                x0=idx, y0=price,
-                x1=len(df) - 1, y1=price,
-                line=dict(color=color, width=line_width, dash=line_dash),
-                row=1, col=1
-            )
+            # Append line configuration dict
+            chart_lines.append({
+                "x0": idx,
+                "x1": len(df) - 1,
+                "y": price,
+                "color": color,
+                "width": line_width,
+                "dash": line_dash
+            })
             
             # Add annotation tag
             fig.add_annotation(
@@ -346,7 +348,21 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 row=1, col=1
             )
 
-    # Equilibrium line (bounded or subtle dot)
+        # Render lines using your requested loop structure
+        for line in chart_lines:
+            fig.add_shape(
+                type="line",
+                x0=line["x0"],
+                y0=line["y"],
+                x1=line["x1"],
+                y1=line["y"],
+                line=dict(
+                    color=line["color"], width=line["width"], dash=line["dash"]
+                ),
+                row=1, col=1
+            )
+
+    # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
         fig.add_shape(
