@@ -312,7 +312,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines & labels using your explicit chart_lines loop structure
+  # BOS / Sweep lines & labels using bounded segments starting at the event candle
     if show_bos_lines:
         chart_lines = []
         for ev in result["events"]:
@@ -328,7 +328,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
             line_dash = "solid" if is_bos else "dash"
             line_width = 2 if is_bos else 1
             
-            # Append line configuration dict
+            # Append line configuration starting strictly at the event candle 'idx' to the latest bar
             chart_lines.append({
                 "x0": idx,
                 "x1": len(df) - 1,
@@ -338,7 +338,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 "dash": line_dash
             })
             
-            # Add annotation tag
+            # Add annotation tag right on the triggering candle
             fig.add_annotation(
                 x=idx, y=price, text=label,
                 showarrow=True, arrowhead=2,
@@ -348,7 +348,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 row=1, col=1
             )
 
-        # Render lines using your requested loop structure
+        # Render lines
         for line in chart_lines:
             fig.add_shape(
                 type="line",
@@ -361,7 +361,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 ),
                 row=1, col=1
             )
-
     # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
