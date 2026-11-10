@@ -20,7 +20,7 @@ import time
 # HELPER: Fetch OHLC from yfinance
 # ─────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def fetch_ohlc(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
+def fetch_ohlc(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
     """Fetch historical OHLC data from Yahoo Finance."""
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
@@ -50,48 +50,69 @@ def detect_pivots(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
-# HELPER: Multi-timeframe structural data (bias, zone, eq)
+# HELPER: Full Timeframe Structural Analysis (Bias, Zone, EQ, Last Event)
 # ─────────────────────────────────────────────────────────────────
-def tf_zone_data(df: pd.DataFrame, length: int):
-    """
-    Equivalent of Pine Script f_tf_data_zone().
-    Returns (bias, zone, eq) for the latest bar.
-    """
+def get_tf_full_analysis(df: pd.DataFrame, length: int):
+    """Computes bias, zone, equilibrium, and the last structural event for any timeframe."""
     if len(df) < length * 2 + 1:
-        return 0, 0, np.nan
+        return {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Insufficient Data", "dealing_high": np.nan, "dealing_low": np.nan}
 
-    ph, pl = detect_pivots(df, length)
+    raw_maj_a, raw_maj_v = detect_pivots(df, length)
 
-    last_hi = np.nan
-    last_lo = np.nan
+    last_maj_a_val = np.nan
+    last_maj_a_idx = -1
+    maj_a_broken = False
+
+    last_maj_v_val = np.nan
+    last_maj_v_idx = -1
+    maj_v_broken = False
+
+    last_event = "No Event Yet"
+
+    for i in range(length, len(df)):
+        if not np.isnan(raw_maj_a.iloc[i]):
+            last_maj_a_val = raw_maj_a.iloc[i]
+            last_maj_a_idx = i
+            maj_a_broken = False
+
+        if not np.isnan(raw_maj_v.iloc[i]):
+            last_maj_v_val = raw_maj_v.iloc[i]
+            last_maj_v_idx = i
+            maj_v_broken = False
+
+        if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
+            if df["High"].iloc[i] > last_maj_a_val:
+                if df["Close"].iloc[i] > last_maj_a_val:
+                    maj_a_broken = True
+                    last_event = "BOS Bullish (Body Close)"
+                else:
+                    last_event = "Sweep High (Wick)"
+
+        if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
+            if df["Low"].iloc[i] < last_maj_v_val:
+                if df["Close"].iloc[i] < last_maj_v_val:
+                    maj_v_broken = True
+                    last_event = "BOS Bearish (Body Close)"
+                else:
+                    last_event = "Sweep Low (Wick)"
+
     bias = 0
-    d_high = np.nan
-    d_low = np.nan
-
-    for i in range(len(df)):
-        if not np.isnan(ph.iloc[i]):
-            last_hi = ph.iloc[i]
-            d_high = ph.iloc[i]
-        if not np.isnan(pl.iloc[i]):
-            last_lo = pl.iloc[i]
-            d_low = pl.iloc[i]
-
-    if not np.isnan(last_hi) and df["Close"].iloc[-1] > last_hi:
+    if not np.isnan(last_maj_a_val) and df["Close"].iloc[-1] > last_maj_a_val:
         bias = 1
-    if not np.isnan(last_lo) and df["Close"].iloc[-1] < last_lo:
+    if not np.isnan(last_maj_v_val) and df["Close"].iloc[-1] < last_maj_v_val:
         bias = -1
 
-    if not np.isnan(d_high) and not np.isnan(d_low):
-        eq = (d_high + d_low) / 2
-    else:
-        eq = np.nan
+    eq = (last_maj_a_val + last_maj_v_val) / 2 if (not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val)) else np.nan
+    zone = 0 if np.isnan(eq) else (1 if df["Close"].iloc[-1] > eq else -1)
 
-    if np.isnan(eq):
-        zone = 0
-    else:
-        zone = 1 if df["Close"].iloc[-1] > eq else -1
-
-    return bias, zone, eq
+    return {
+        "bias": bias,
+        "zone": zone,
+        "eq": eq,
+        "last_event": last_event,
+        "dealing_high": last_maj_a_val,
+        "dealing_low": last_maj_v_val
+    }
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -121,12 +142,10 @@ def compute_sweep_flags(df: pd.DataFrame, lookback: int,
 
 
 # ─────────────────────────────────────────────────────────────────
-# MAIN ANALYSIS ENGINE
+# MAIN ANALYSIS ENGINE (Primary Chart)
 # ─────────────────────────────────────────────────────────────────
 def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
-                sweep_high_flags: dict, sweep_low_flags: dict,
-                is_bull_aligned: bool, is_bear_aligned: bool,
-                macro_title: str, macro_text: str, macro_col: str):
+                sweep_high_flags: dict, sweep_low_flags: dict):
     n = len(df)
     if n < major_len * 2 + 1:
         return None
@@ -144,9 +163,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     active_dr_low_bar = -1
 
     last_event = "Initializing Structure..."
-    event_col = "gray"
     next_target = "Waiting for Event..."
-
     events_log = []
 
     for i in range(major_len, n):
@@ -162,14 +179,12 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
             maj_v_broken = False
             active_dr_low_bar = i
 
-        # ── BOS / Sweep — Major High (A) ──
         if (not np.isnan(last_maj_a_val) and not maj_a_broken
                 and last_maj_a_idx >= 0 and i > last_maj_a_idx):
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
                     maj_a_broken = True
                     last_event = "BOS Bullish (Body Close)"
-                    event_col = "green"
                     next_target = "Target: Next External High / FVG"
                     events_log.append({
                         "type": "bos_bull", "idx": i,
@@ -179,7 +194,6 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     })
                 else:
                     last_event = "LIQUIDITY SWEEP HIGH (Wick)"
-                    event_col = "red"
                     next_target = "Target: EQ (50%) -> Range Low"
                     events_log.append({
                         "type": "sweep_high", "idx": i,
@@ -188,14 +202,12 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                         "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
                     })
 
-        # ── BOS / Sweep — Major Low (V) ──
         if (not np.isnan(last_maj_v_val) and not maj_v_broken
                 and last_maj_v_idx >= 0 and i > last_maj_v_idx):
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
                     maj_v_broken = True
                     last_event = "BOS Bearish (Body Close)"
-                    event_col = "red"
                     next_target = "Target: Next External Low / FVG"
                     events_log.append({
                         "type": "bos_bear", "idx": i,
@@ -205,7 +217,6 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     })
                 else:
                     last_event = "LIQUIDITY SWEEP LOW (Wick)"
-                    event_col = "green"
                     next_target = "Target: EQ (50%) -> Range High"
                     events_log.append({
                         "type": "sweep_low", "idx": i,
@@ -214,30 +225,15 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                         "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
                     })
 
-    # ── Dealing Range ──
     dealing_high = last_maj_a_val if not np.isnan(last_maj_a_val) else np.nan
     dealing_low = last_maj_v_val if not np.isnan(last_maj_v_val) else np.nan
 
-    if not np.isnan(dealing_high) and not np.isnan(dealing_low):
-        eq_price = (dealing_high + dealing_low) / 2
-    else:
-        eq_price = np.nan
+    eq_price = (dealing_high + dealing_low) / 2 if (not np.isnan(dealing_high) and not np.isnan(dealing_low)) else np.nan
 
     if not np.isnan(eq_price):
-        if df["Close"].iloc[-1] > eq_price:
-            active_zone = "PREMIUM (Above 50% EQ)"
-            zone_col = "red"
-        else:
-            active_zone = "DISCOUNT (Below 50% EQ)"
-            zone_col = "green"
+        active_zone = "PREMIUM (Above 50% EQ)" if df["Close"].iloc[-1] > eq_price else "DISCOUNT (Below 50% EQ)"
     else:
         active_zone = "N/A"
-        zone_col = "gray"
-
-    if macro_title == "":
-        macro_title = "Macro"
-    if macro_text == "":
-        macro_text = "N/A"
 
     return {
         "events": events_log,
@@ -245,13 +241,8 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         "dealing_low": dealing_low,
         "eq_price": eq_price,
         "active_zone": active_zone,
-        "zone_col": zone_col,
         "last_event": last_event,
-        "event_col": event_col,
         "next_target": next_target,
-        "macro_title": macro_title,
-        "macro_text": macro_text,
-        "macro_col": macro_col,
         "active_dr_high_bar": active_dr_high_bar,
         "active_dr_low_bar": active_dr_low_bar,
         "raw_maj_a": raw_maj_a,
@@ -270,7 +261,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
     df = result["df"]
     fig = make_subplots(rows=1, cols=1)
 
-    # Candlestick
     fig.add_trace(go.Candlestick(
         x=df.index,
         open=df["Open"], high=df["High"],
@@ -280,7 +270,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         decreasing_line_color="red",
     ))
 
-    # Major pivot dots
     if show_major_dots:
         maj_a = result["raw_maj_a"]
         maj_v = result["raw_maj_v"]
@@ -299,7 +288,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                     name="Major Low", showlegend=False
                 ))
 
-    # Active dealing range dots
     if show_range_dots:
         drh = result["active_dr_high_bar"]
         drl = result["active_dr_low_bar"]
@@ -316,7 +304,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines
     if show_bos_lines:
         for ev in result["events"]:
             x1 = df.index[ev["line_x1"]]
@@ -341,7 +328,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 borderwidth=1, borderpad=2,
             )
 
-    # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
         drh = result["active_dr_high_bar"]
@@ -375,9 +361,9 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD
+# BUILD DASHBOARD (With Multi-Timeframe Event Matrix)
 # ─────────────────────────────────────────────────────────────────
-def render_dashboard(result: dict, text_size: str):
+def render_dashboard(result: dict, tf_results: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
 
     st.markdown(
@@ -387,34 +373,44 @@ def render_dashboard(result: dict, text_size: str):
     )
 
     data = [
-        ("Dealing High",
-         f"{result['dealing_high']:.2f}" if not np.isnan(result['dealing_high']) else "N/A"),
-        ("Equilibrium (50% EQ)",
-         f"{result['eq_price']:.2f}" if not np.isnan(result['eq_price']) else "N/A"),
-        ("Dealing Low",
-         f"{result['dealing_low']:.2f}" if not np.isnan(result['dealing_low']) else "N/A"),
+        ("Dealing High", f"{result['dealing_high']:.2f}" if not np.isnan(result['dealing_high']) else "N/A"),
+        ("Equilibrium (50% EQ)", f"{result['eq_price']:.2f}" if not np.isnan(result['eq_price']) else "N/A"),
+        ("Dealing Low", f"{result['dealing_low']:.2f}" if not np.isnan(result['dealing_low']) else "N/A"),
         ("Current Pricing Zone", result["active_zone"]),
-        ("Last Structure Event", result["last_event"]),
+        ("Last Structure Event (Chart)", result["last_event"]),
         ("Dynamic Target Objective", result["next_target"]),
     ]
 
     for metric, value in data:
         c1, c2 = st.columns([1, 2])
         with c1:
-            st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{metric}</div>",
-                        unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{metric}</div>", unsafe_allow_html=True)
         with c2:
-            st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{value}</div>",
-                        unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{value}</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        f"<div style='font-size:{fs+2}px; font-weight:bold; margin-top:8px;'>{result['macro_title']}</div>",
-        unsafe_allow_html=True
-    )
-    st.markdown(
-        f"<div style='font-size:{fs}px; font-family:monospace;'>{result['macro_text']}</div>",
-        unsafe_allow_html=True
-    )
+    # Multi-Timeframe Structure & Bias Matrix
+    st.markdown(f"<div style='font-size:{fs+2}px; font-weight:bold; margin-top:12px;'>Multi-Timeframe Structure & Bias Alignment</div>", unsafe_allow_html=True)
+    
+    tf_headers = ["Timeframe", "Bias", "Zone", "Last Structural Event"]
+    
+    # Build clean HTML table for timeframes
+    table_html = "<table style='width:100%; font-family:monospace; font-size:{}px; border-collapse:collapse;'>".format(fs)
+    table_html += "<tr style='border-bottom: 1px solid #444; text-align:left;'><th>TF</th><th>Bias</th><th>Zone</th><th>Last Structure Event</th></tr>"
+    
+    for tf_label in ["1M", "1W", "1D", "240", "60", "15"]:
+        res = tf_results.get(tf_label, {})
+        bias_val = res.get("bias", 0)
+        bias_str = "BULLISH 🟢" if bias_val == 1 else ("BEARISH 🔴" if bias_val == -1 else "NEUTRAL ⚪")
+        
+        zone_val = res.get("zone", 0)
+        zone_str = "PREMIUM" if zone_val == 1 else ("DISCOUNT" if zone_val == -1 else "EQ/N/A")
+        
+        event_str = res.get("last_event", "N/A")
+        
+        table_html += f"<tr style='border-bottom: 1px solid #222;'><td><b>{tf_label}</b></td><td>{bias_str}</td><td>{zone_str}</td><td>{event_str}</td></tr>"
+    
+    table_html += "</table>"
+    st.markdown(table_html, unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -424,10 +420,8 @@ def main():
     st.set_page_config(page_title="ICT Structure Engine v6", layout="wide")
     st.title("📊 ICT Structure & Liquidity Sweep Engine [v6]")
 
-    # ── Sidebar controls ──
     st.sidebar.header("⚙️ Settings")
 
-    # Predefined ticker symbols list + custom option
     predefined_tickers = [
         "BTC-USD", "ETH-USD", "SOL-USD", 
         "EURUSD=X", "GBPUSD=X", "USDJPY=X", 
@@ -435,26 +429,16 @@ def main():
     ]
     
     selected_ticker_option = st.sidebar.selectbox("Select Ticker Symbol", predefined_tickers, index=0)
-    
-    if selected_ticker_option == "CUSTOM":
-        ticker = st.sidebar.text_input("Enter Custom Ticker", value="BTC-USD")
-    else:
-        ticker = selected_ticker_option
+    ticker = st.sidebar.text_input("Enter Custom Ticker", value="BTC-USD") if selected_ticker_option == "CUSTOM" else selected_ticker_option
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
         period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y", "5y", "max"], index=2)
     with col2:
-        # User dropdown choices mapping to yfinance parameters
         interval_options = {
-            "1 Minute": "1m",
-            "5 Minutes": "5m",
-            "15 Minutes": "15m",
-            "1 Hour": "1h",
-            "4 Hours": "4h",
-            "1 Daily": "1d",
-            "1 Weekly": "1wk",
-            "1 Monthly": "1mo"
+            "1 Minute": "1m", "5 Minutes": "5m", "15 Minutes": "15m", 
+            "1 Hour": "1h", "4 Hours": "4h", "Daily": "1d", 
+            "Weekly": "1wk", "Monthly": "1mo"
         }
         selected_interval_label = st.sidebar.selectbox("Interval", list(interval_options.keys()), index=5)
         interval = interval_options[selected_interval_label]
@@ -485,13 +469,8 @@ def main():
     table_pos = st.sidebar.radio("Table Position", ["top", "bottom"], index=0)
     text_size = st.sidebar.selectbox("Text Size", ["tiny", "small", "normal", "large"], index=2)
 
-    st.sidebar.subheader("Color Settings")
-    bull_color = st.sidebar.color_picker("Bullish / Discount", "#00FF00")
-    bear_color = st.sidebar.color_picker("Bearish / Premium", "#FF0000")
-    eq_color = st.sidebar.color_picker("Equilibrium", "#FFFF00")
-
-    # ── Fetch main data ──
-    with st.spinner(f"Fetching {ticker} data ({interval})..."):
+    # Fetch main chart data
+    with st.spinner(f"Fetching {ticker} data ({selected_interval_label})..."):
         df = fetch_ohlc(ticker, period=period, interval=interval)
 
     if df.empty:
@@ -501,12 +480,9 @@ def main():
     n = len(df)
     st.info(f"Showing {n} bars of {ticker} ({selected_interval_label}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
-    # ── Multi-timeframe data with correct Yahoo Finance intervals ("1wk", "1mo") ──
+    # Compute multi-timeframe full analysis
     with st.spinner("Computing multi-timeframe analysis..."):
-        curr_tf = interval
-
         tf_results = {}
-        # Mapping correct yfinance interval strings: '1mo' for monthly, '1wk' for weekly
         tf_configs = [
             ("1M", "1mo", m_len),
             ("1W", "1wk", w_len),
@@ -518,24 +494,18 @@ def main():
 
         for tf_label, tf_interval, tf_len in tf_configs:
             try:
-                # Use max history for higher timeframes to prevent empty datasets
                 tf_period = "max" if tf_label in ["1M", "1W", "1D"] else "2y"
                 tdf = fetch_ohlc(ticker, period=tf_period, interval=tf_interval)
-                if len(tdf) >= tf_len * 2 + 1:
-                    bias, zone, eq = tf_zone_data(tdf, tf_len)
-                    tf_results[tf_label] = (bias, zone, eq)
-                else:
-                    tf_results[tf_label] = (0, 0, np.nan)
+                tf_results[tf_label] = get_tf_full_analysis(tdf, tf_len)
             except Exception:
-                tf_results[tf_label] = (0, 0, np.nan)
+                tf_results[tf_label] = {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Error"}
 
-    # ── Macro alignment ──
-    m_bias, m_zone, m_eq = tf_results.get("1M", (0, 0, np.nan))
-    w_bias, w_zone, w_eq = tf_results.get("1W", (0, 0, np.nan))
-    d_bias, d_zone, d_eq = tf_results.get("1D", (0, 0, np.nan))
-    h4_bias, h4_zone, h4_eq = tf_results.get("240", (0, 0, np.nan))
-    h1_bias, h1_zone, h1_eq = tf_results.get("60", (0, 0, np.nan))
-    m15_bias, m15_zone, m15_eq = tf_results.get("15", (0, 0, np.nan))
+    # Macro alignment check
+    m_bias = tf_results.get("1M", {}).get("bias", 0)
+    w_bias = tf_results.get("1W", {}).get("bias", 0)
+    d_bias = tf_results.get("1D", {}).get("bias", 0)
+    h4_zone = tf_results.get("240", {}).get("zone", 0)
+    h1_zone = tf_results.get("60", {}).get("zone", 0)
 
     macroWeeklyH4Bull = (w_bias == 1 and h4_zone == -1)
     macroWeeklyH4Bear = (w_bias == -1 and h4_zone == 1)
@@ -545,89 +515,28 @@ def main():
     is_bull_aligned = macroWeeklyH4Bull or macroDailyH1Bull
     is_bear_aligned = macroWeeklyH4Bear or macroDailyH1Bear
 
-    # ── Macro row text based on current timeframe ──
-    macro_title = ""
-    macro_text = ""
-    macro_col = "gray"
+    sweep_high_flags, sweep_low_flags = compute_sweep_flags(df, lookback, is_bull_aligned, is_bear_aligned)
 
-    last_close = df["Close"].iloc[-1]
-
-    if curr_tf in ["1wk", "1mo"]:
-        macro_title = "Macro (Monthly / Weekly Bias)"
-        m_str = "M: BULL" if m_bias == 1 else "M: BEAR" if m_bias == -1 else "M: NEUTRAL"
-        w_str = "W: BULL" if w_bias == 1 else "W: BEAR" if w_bias == -1 else "W: NEUTRAL"
-        macro_text = f"{m_str} | {w_str}"
-        macro_col = "green" if m_bias == 1 else "red" if m_bias == -1 else "gray"
-
-    elif curr_tf == "1d":
-        macro_title = "Macro (Weekly / Daily Bias)"
-        w_str = "W: BULL" if w_bias == 1 else "W: BEAR" if w_bias == -1 else "W: NEUTRAL"
-        d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
-        macro_text = f"{w_str} | {d_str}"
-        macro_col = "green" if w_bias == 1 else "red" if w_bias == -1 else "gray"
-
-    elif curr_tf == "4h":
-        macro_title = "Macro (Daily Trend / H4 Zone)"
-        d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
-        h4_txt = "H4: NA" if np.isnan(h4_eq) else f"H4: {h4_eq:.4f}"
-        if not np.isnan(h4_eq):
-            h4_txt += " (PREM)" if last_close > h4_eq else " (DISC)" if last_close < h4_eq else " (EQ)"
-        macro_text = f"{d_str} | {h4_txt}"
-        macro_col = "green" if d_bias == 1 else "red" if d_bias == -1 else "gray"
-
-    elif curr_tf == "1h":
-        macro_title = "Macro (Daily Trend / H1 Zone)"
-        d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
-        h1_txt = "H1: NA" if np.isnan(h1_eq) else f"H1: {h1_eq:.4f}"
-        if not np.isnan(h1_eq):
-            h1_txt += " (PREM)" if last_close > h1_eq else " (DISC)" if last_close < h1_eq else " (EQ)"
-        macro_text = f"{d_str} | {h1_txt}"
-        macro_col = "green" if d_bias == 1 else "red" if d_bias == -1 else "gray"
-
-    else:
-        macro_title = "Macro (H4 Trend / M15 Zone)"
-        h4_bias_str = "H4: BULL" if h4_bias == 1 else "H4: BEAR" if h4_bias == -1 else "H4: NEUTRAL"
-        m15_txt = "M15: NA" if np.isnan(m15_eq) else f"M15: {m15_eq:.4f}"
-        if not np.isnan(m15_eq):
-            m15_txt += " (PREM)" if last_close > m15_eq else " (DISC)" if last_close < m15_eq else " (EQ)"
-        macro_text = f"{h4_bias_str} | {m15_txt}"
-        macro_col = "green" if h4_bias == 1 else "red" if h4_bias == -1 else "gray"
-
-    # ── Compute sweep flags ──
-    sweep_high_flags, sweep_low_flags = compute_sweep_flags(
-        df, lookback, is_bull_aligned, is_bear_aligned
-    )
-
-    # ── Run ICT analysis ──
-    result = analyze_ict(
-        df, major_len, lookback,
-        sweep_high_flags, sweep_low_flags,
-        is_bull_aligned, is_bear_aligned,
-        macro_title, macro_text, macro_col
-    )
+    result = analyze_ict(df, major_len, lookback, sweep_high_flags, sweep_low_flags)
 
     if result is None:
         st.warning("Not enough data for the selected major swing length. Try a smaller length or more data.")
         return
 
-    # ── Render dashboard ──
+    # Render layout
     if table_pos == "top":
-        render_dashboard(result, text_size)
-        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots,
-                                    show_bos_lines, show_eq_line), use_container_width=True)
+        render_dashboard(result, tf_results, text_size)
+        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots, show_bos_lines, show_eq_line), use_container_width=True)
     else:
-        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots,
-                                    show_bos_lines, show_eq_line), use_container_width=True)
-        render_dashboard(result, text_size)
+        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots, show_bos_lines, show_eq_line), use_container_width=True)
+        render_dashboard(result, tf_results, text_size)
 
-    # ── Show raw data toggle ──
     with st.expander("📋 Raw Data (OHLC)"):
         st.dataframe(df.tail(50).style.format({
             "Open": "{:.5f}", "High": "{:.5f}",
             "Low": "{:.5f}", "Close": "{:.5f}"
         }))
 
-    # ── Auto-Refresh Loop for Live Updates ──
     if auto_refresh:
         time.sleep(refresh_rate)
         st.rerun()
