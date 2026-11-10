@@ -50,10 +50,10 @@ def detect_pivots(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
-# HELPER: Full Timeframe Structural Analysis & Event Tracking
+# HELPER: Synchronized Timeframe Structural Analysis & Event Tracking
 # ─────────────────────────────────────────────────────────────────
 def get_tf_full_analysis(df: pd.DataFrame, length: int):
-    """Computes independent bias, zone, equilibrium, and last structural event for any timeframe."""
+    """Computes independent bias, zone, equilibrium, and chronologically latest structural event."""
     if len(df) < length * 2 + 1:
         return {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Insufficient Data", "dealing_high": np.nan, "dealing_low": np.nan}
 
@@ -67,8 +67,7 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
     last_maj_v_idx = -1
     maj_v_broken = False
 
-    last_event = "No Event Yet"
-    bias = 0
+    last_event = "Initializing Structure..."
 
     for i in range(length, len(df)):
         if not np.isnan(raw_maj_a.iloc[i]):
@@ -81,32 +80,29 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
             last_maj_v_idx = i
             maj_v_broken = False
 
-        # Evaluate Structure Break / Sweep on Highs
+        # Evaluate High Breaks / Sweeps
         if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
                     maj_a_broken = True
                     last_event = "BOS Bullish (Body Close)"
-                    bias = 1
                 else:
-                    last_event = "Liquidity Sweep High (Wick)"
+                    last_event = "LIQUIDITY SWEEP HIGH (Wick)"
 
-        # Evaluate Structure Break / Sweep on Lows
+        # Evaluate Low Breaks / Sweeps
         if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
                     maj_v_broken = True
                     last_event = "BOS Bearish (Body Close)"
-                    bias = -1
                 else:
-                    last_event = "Liquidity Sweep Low (Wick)"
+                    last_event = "LIQUIDITY SWEEP LOW (Wick)"
 
-    # Fallback bias determination using last close vs pivot if no mid-range break occurred
-    if bias == 0 and not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val):
-        if df["Close"].iloc[-1] > last_maj_a_val:
-            bias = 1
-        elif df["Close"].iloc[-1] < last_maj_v_val:
-            bias = -1
+    bias = 0
+    if not np.isnan(last_maj_a_val) and df["Close"].iloc[-1] > last_maj_a_val:
+        bias = 1
+    if not np.isnan(last_maj_v_val) and df["Close"].iloc[-1] < last_maj_v_val:
+        bias = -1
 
     eq = (last_maj_a_val + last_maj_v_val) / 2 if (not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val)) else np.nan
     zone = 0 if np.isnan(eq) else (1 if df["Close"].iloc[-1] > eq else -1)
@@ -367,7 +363,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD (With Multi-Timeframe Event Matrix - 1M, 1W, 1D, 240)
+# BUILD DASHBOARD
 # ─────────────────────────────────────────────────────────────────
 def render_dashboard(result: dict, tf_results: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
@@ -394,7 +390,6 @@ def render_dashboard(result: dict, tf_results: dict, text_size: str):
         with c2:
             st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{value}</div>", unsafe_allow_html=True)
 
-    # Multi-Timeframe Structure & Bias Matrix (1M, 1W, 1D, 240)
     st.markdown(f"<div style='font-size:{fs+2}px; font-weight:bold; margin-top:12px;'>Multi-Timeframe Structure & Bias Alignment</div>", unsafe_allow_html=True)
     
     table_html = "<table style='width:100%; font-family:monospace; font-size:{}px; border-collapse:collapse;'>".format(fs)
@@ -425,10 +420,10 @@ def main():
 
     st.sidebar.header("⚙️ Settings")
 
-    predefined_s = [
+    predefined_tickers = [
         "BTC-USD", "ETH-USD", "SOL-USD", 
         "EURUSD=X", "GBPUSD=X", "USDJPY=X", 
-        "GC=F", "SI=F", "CL=F", "AAPL", "NVDA", "TSLA", "MSFT", "CUSTOM"
+        "GC=F", "CL=F", "AAPL", "NVDA", "TSLA", "MSFT", "CUSTOM"
     ]
     
     selected_ticker_option = st.sidebar.selectbox("Select Ticker Symbol", predefined_tickers, index=0)
@@ -470,7 +465,6 @@ def main():
     table_pos = st.sidebar.radio("Table Position", ["top", "bottom"], index=0)
     text_size = st.sidebar.selectbox("Text Size", ["tiny", "small", "normal", "large"], index=2)
 
-    # Fetch main chart data
     with st.spinner(f"Fetching {ticker} data ({selected_interval_label})..."):
         df = fetch_ohlc(ticker, period=period, interval=interval)
 
@@ -481,7 +475,6 @@ def main():
     n = len(df)
     st.info(f"Showing {n} bars of {ticker} ({selected_interval_label}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
-    # Compute multi-timeframe full analysis (1M, 1W, 1D, 240)
     with st.spinner("Computing multi-timeframe analysis..."):
         tf_results = {}
         tf_configs = [
@@ -499,7 +492,6 @@ def main():
             except Exception:
                 tf_results[tf_label] = {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Error"}
 
-    # Macro alignment check
     m_bias = tf_results.get("1M", {}).get("bias", 0)
     w_bias = tf_results.get("1W", {}).get("bias", 0)
     d_bias = tf_results.get("1D", {}).get("bias", 0)
@@ -519,7 +511,6 @@ def main():
         st.warning("Not enough data for the selected major swing length. Try a smaller length or more data.")
         return
 
-    # Render layout
     if table_pos == "top":
         render_dashboard(result, tf_results, text_size)
         st.plotly_chart(build_chart(result, show_major_dots, show_range_dots, show_bos_lines, show_eq_line), use_container_width=True)
