@@ -53,7 +53,7 @@ def detect_pivots(df: pd.DataFrame, length: int):
 # HELPER: Synchronized Timeframe Structural Analysis & Event Tracking
 # ─────────────────────────────────────────────────────────────────
 def get_tf_full_analysis(df: pd.DataFrame, length: int):
-    """Computes independent bias, zone, equilibrium, and chronologically latest structural event."""
+    """Computes synchronized bias, zone, equilibrium, and active structural event for any timeframe."""
     if len(df) < length * 2 + 1:
         return {"bias": 0, "zone": 0, "eq": np.nan, "last_event": "Insufficient Data", "dealing_high": np.nan, "dealing_low": np.nan}
 
@@ -67,7 +67,8 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
     last_maj_v_idx = -1
     maj_v_broken = False
 
-    last_event = "Initializing Structure..."
+    last_event = "Range Bounded / Waiting"
+    bias = 0
 
     for i in range(length, len(df)):
         if not np.isnan(raw_maj_a.iloc[i]):
@@ -86,6 +87,7 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
                 if df["Close"].iloc[i] > last_maj_a_val:
                     maj_a_broken = True
                     last_event = "BOS Bullish (Body Close)"
+                    bias = 1
                 else:
                     last_event = "LIQUIDITY SWEEP HIGH (Wick)"
 
@@ -95,17 +97,16 @@ def get_tf_full_analysis(df: pd.DataFrame, length: int):
                 if df["Close"].iloc[i] < last_maj_v_val:
                     maj_v_broken = True
                     last_event = "BOS Bearish (Body Close)"
+                    bias = -1
                 else:
                     last_event = "LIQUIDITY SWEEP LOW (Wick)"
 
-    bias = 0
-    if not np.isnan(last_maj_a_val) and df["Close"].iloc[-1] > last_maj_a_val:
-        bias = 1
-    if not np.isnan(last_maj_v_val) and df["Close"].iloc[-1] < last_maj_v_val:
-        bias = -1
-
+    # Fallback bias alignment based on price relative to EQ if no recent break occurred
     eq = (last_maj_a_val + last_maj_v_val) / 2 if (not np.isnan(last_maj_a_val) and not np.isnan(last_maj_v_val)) else np.nan
     zone = 0 if np.isnan(eq) else (1 if df["Close"].iloc[-1] > eq else -1)
+
+    if bias == 0 and not np.isnan(eq):
+        bias = 1 if df["Close"].iloc[-1] > eq else -1
 
     return {
         "bias": bias,
