@@ -456,7 +456,7 @@ def main():
     with col1:
         period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y", "5y", "max"], index=2)
     with col2:
-        interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d"], index=5)
+        interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d", "1w", "1m"], index=5)
 
     st.sidebar.subheader("Live Updates")
     auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=False)
@@ -503,7 +503,7 @@ def main():
     # ── Multi-timeframe data (Fixed with max/5y periods for higher TFs) ──
     # ── Multi-timeframe data ──
     with st.spinner("Computing multi-timeframe analysis..."):
-        interval_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
+        interval_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d", "1W": "1W", "1M": "1M"}
         curr_tf = interval_map.get(interval, "1d")
 
         tf_period = "2y" if interval in ["1d", "4h", "1h"] else "2y"
