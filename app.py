@@ -95,13 +95,13 @@ def tf_zone_data(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
-# CONDITIONAL SWEEP FLAGS
+# CONDITIONAL SWEEP FLAGS (Returning structured lines)
 # ─────────────────────────────────────────────────────────────────
-def compute_sweep_flags(df: pd.DataFrame, lookback: int,
-                        is_bull_aligned: bool, is_bear_aligned: bool):
-    """Compute sweep flags for the current timeframe."""
-    sweep_high_flags = {}
-    sweep_low_flags = {}
+def compute_sweep_lines(df: pd.DataFrame, lookback: int,
+                        is_bull_aligned: bool, is_bear_aligned: bool,
+                        bear_color: str, bull_color: str):
+    """Compute conditional sweep line definitions using your exact schema."""
+    sweep_lines = []
     n = len(df)
     for i in range(lookback + 1, n):
         prev_high = df["High"].iloc[i - lookback:i].max()
@@ -114,19 +114,31 @@ def compute_sweep_flags(df: pd.DataFrame, lookback: int,
                    ((not bullish_bar) and df["Close"].iloc[i] > prev_low)
 
         if is_bear_aligned and df["High"].iloc[i] > prev_high and edge_high:
-            sweep_high_flags[i] = True
+            sweep_lines.append({
+                "x0": i - lookback,
+                "x1": n - 1,
+                "y": prev_high,
+                "color": bear_color,
+                "width": 1,
+                "dash": "dot",
+            })
         if is_bull_aligned and df["Low"].iloc[i] < prev_low and edge_low:
-            sweep_low_flags[i] = True
-    return sweep_high_flags, sweep_low_flags
+            sweep_lines.append({
+                "x0": i - lookback,
+                "x1": n - 1,
+                "y": prev_low,
+                "color": bull_color,
+                "width": 1,
+                "dash": "dot",
+            })
+    return sweep_lines
 
 
 # ─────────────────────────────────────────────────────────────────
 # MAIN ANALYSIS ENGINE
 # ─────────────────────────────────────────────────────────────────
 def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
-                sweep_high_flags: dict, sweep_low_flags: dict,
-                is_bull_aligned: bool, is_bear_aligned: bool,
-                macro_title: str, macro_text: str, macro_col: str):
+                sweep_lines: list, macro_title: str, macro_text: str, macro_col: str):
     """
     Run the full ICT Structure engine on a DataFrame.
     Returns dict with all computed values for the dashboard + plot data.
@@ -156,7 +168,6 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     events_log = []
 
     for i in range(major_len, n):
-        # Update major pivot A
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
             last_maj_a_idx = i
@@ -253,8 +264,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         "active_dr_low_bar": active_dr_low_bar,
         "raw_maj_a": raw_maj_a,
         "raw_maj_v": raw_maj_v,
-        "sweep_high_flags": sweep_high_flags,
-        "sweep_low_flags": sweep_low_flags,
+        "sweep_lines": sweep_lines,
         "df": df,
     }
 
@@ -277,7 +287,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         decreasing_line_color="red",
     ))
 
-    # Major pivot dots (Only show on recent bars to avoid clutter)
+    # Major pivot dots
     if show_major_dots:
         maj_a = result["raw_maj_a"]
         maj_v = result["raw_maj_v"]
@@ -312,9 +322,11 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-  # BOS / Sweep lines & labels using bounded segments starting at the event candle
+    # BOS & Sweep Lines using your exact chart_lines loop structure
     if show_bos_lines:
         chart_lines = []
+        
+        # 1. Add BOS and Event lines
         for ev in result["events"]:
             idx = ev["idx"]
             price = ev["price"]
@@ -324,21 +336,15 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
             
             color = "green" if "bull" in ev_type or ev_type == "sweep_low" else "red"
             
-            # Line styling: BOS = solid width 2, Sweep = dashed width 1
-            line_dash = "solid" if is_bos else "dash"
-            line_width = 2 if is_bos else 1
-            
-            # Append line configuration starting strictly at the event candle 'idx' to the latest bar
             chart_lines.append({
                 "x0": idx,
                 "x1": len(df) - 1,
                 "y": price,
                 "color": color,
-                "width": line_width,
-                "dash": line_dash
+                "width": 2 if is_bos else 1,
+                "dash": "solid" if is_bos else "dash"
             })
             
-            # Add annotation tag right on the triggering candle
             fig.add_annotation(
                 x=idx, y=price, text=label,
                 showarrow=True, arrowhead=2,
@@ -348,7 +354,11 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 row=1, col=1
             )
 
-        # Render lines
+        # 2. Add conditional sweep lines using your exact dictionary format
+        for s_line in result["sweep_lines"]:
+            chart_lines.append(s_line)
+
+        # 3. Render all chart lines cleanly in a single loop
         for line in chart_lines:
             fig.add_shape(
                 type="line",
@@ -361,6 +371,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 ),
                 row=1, col=1
             )
+
     # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
@@ -587,17 +598,15 @@ def main():
         macro_text = f"{h4_bias_str} | {m15_txt}"
         macro_col = "green" if h4_bias == 1 else "red" if h4_bias == -1 else "gray"
 
-    # ── Compute sweep flags ──
-    sweep_high_flags, sweep_low_flags = compute_sweep_flags(
-        df, lookback, is_bull_aligned, is_bear_aligned
+    # ── Compute conditional sweep lines using your exact dictionary format ──
+    sweep_lines = compute_sweep_lines(
+        df, lookback, is_bull_aligned, is_bear_aligned, bear_color, bull_color
     )
 
     # ── Run ICT analysis ──
     result = analyze_ict(
         df, major_len, lookback,
-        sweep_high_flags, sweep_low_flags,
-        is_bull_aligned, is_bear_aligned,
-        macro_title, macro_text, macro_col
+        sweep_lines, macro_title, macro_text, macro_col
     )
 
     if result is None:
