@@ -241,9 +241,9 @@ curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 
 
-# --- Macro Alignment Context (Strict Pine Script Matching) ---
+# --- Macro Alignment Context (Fixed H4 Fetching) ---
 def get_h4_zone_and_daily_bias(sym):
-  # Fetch Daily data for Trend Bias
+  # 1. Fetch Daily data for Trend Bias
   df_d = yf.download(
       sym, period="1y", interval="1d", progress=False, threads=False
   )
@@ -256,25 +256,30 @@ def get_h4_zone_and_daily_bias(sym):
         "BULL" if df_d["Close"].iloc[-1] > df_d["EMA50"].iloc[-1] else "BEAR"
     )
 
-  # Fetch H4 data for Zone calculation
+  # 2. Fetch H4 data safely using 60m interval resampled to 4h (prevents N/A errors)
   df_h4 = yf.download(
-      sym, period="60d", interval="240m", progress=False, threads=False
+      sym, period="59d", interval="60m", progress=False, threads=False
   )
   h4_txt = "H4: NA"
   if not df_h4.empty:
     if isinstance(df_h4.columns, pd.MultiIndex):
       df_h4.columns = df_h4.columns.get_level_values(0)
-    # Calculate simple H4 equilibrium using recent high/low
-    h4_high = df_h4["High"].max()
-    h4_low = df_h4["Low"].min()
-    h4_eq = (h4_high + h4_low) / 2
-    h4_close = df_h4["Close"].iloc[-1]
-    zone_str = (
-        "PREM"
-        if h4_close > h4_eq
-        else "DISC" if h4_close < h4_eq else "EQ"
+    df_h4 = (
+        df_h4.resample("4h")
+        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+        .dropna()
     )
-    h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
+    if not df_h4.empty:
+      h4_high = df_h4["High"].max()
+      h4_low = df_h4["Low"].min()
+      h4_eq = (h4_high + h4_low) / 2
+      h4_close = df_h4["Close"].iloc[-1]
+      zone_str = (
+          "PREM"
+          if h4_close > h4_eq
+          else "DISC" if h4_close < h4_eq else "EQ"
+      )
+      h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
 
   return d_bias, h4_txt
 
@@ -339,7 +344,7 @@ dashboard_data = {
 }
 st.table(pd.DataFrame(dashboard_data))
 
-# --- Interactive Plotly Chart with Visual Overlays (Dots & Lines) ---
+# --- Interactive Plotly Chart with Full Vertical/Horizontal Zoom & Overlays ---
 st.subheader(
     f"🕯️ Structure & Liquidity Chart ({selected_asset_name} -"
     f" {timeframe.upper()})"
@@ -347,7 +352,7 @@ st.subheader(
 
 fig = go.Figure()
 
-# 1. Main Price Series (Candlestick or Line)
+# 1. Main Price Series
 if chart_style == "Candlestick":
   fig.add_trace(
       go.Candlestick(
@@ -370,7 +375,7 @@ else:
       )
   )
 
-# 2. Plot Major Pivot Dots on Chart (Matching your Pine script circles)
+# 2. Major Pivot Dots
 fig.add_trace(
     go.Scatter(
         x=df.index[df["PivotHigh"].notna()],
@@ -391,7 +396,7 @@ fig.add_trace(
     )
 )
 
-# 3. Plot Equilibrium (EQ) Line
+# 3. Equilibrium & Dealing Range Lines
 if not np.isnan(curr_eq):
   fig.add_hline(
       y=curr_eq,
@@ -401,7 +406,6 @@ if not np.isnan(curr_eq):
       annotation_position="bottom right",
   )
 
-# 4. Plot Active Dealing Range High & Low boundary lines
 if not np.isnan(curr_dh):
   fig.add_hline(
       y=curr_dh,
@@ -417,13 +421,19 @@ if not np.isnan(curr_dl):
       annotation_text=f"Dealing Low: {curr_dl:.4f}",
   )
 
+# Configure layout for smooth vertical/horizontal zooming (Box zoom enabled by default)
 fig.update_layout(
     template="plotly_dark",
     xaxis_title="Time",
     yaxis_title="Price",
     height=650,
     xaxis_rangeslider_visible=False,
+    dragmode="zoom",  # Enables box zoom / pinch zoom on mobile
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 
-st.plotly_chart(fig, use_container_width=True)
+# Ensure both X and Y axes allow zooming/scaling freely
+fig.update_xaxes(fixedrange=False)
+fig.update_yaxes(fixedrange=False, autorange=True)
+
+st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
