@@ -12,10 +12,8 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- Live Auto-Refresh Setup (Refreshes every 5 seconds for live updates) ---
-refresh_interval = (
-    5000  # 5000ms = 5 seconds (optimized to bypass Yahoo Finance rate limits)
-)
+# --- Live Auto-Refresh Setup ---
+refresh_interval = 5000  # 5 seconds live feed polling
 count = st_autorefresh(
     interval=refresh_interval, limit=None, key="live_data_refresh"
 )
@@ -63,7 +61,7 @@ DR_LOW_COLOR = "#42a5f5"  # Blue (Dealing Low)
 
 
 # --- Data Fetching & Multi-Timeframe Resampling ---
-@st.cache_data(ttl=10)  # Short cache TTL to allow fresh live data pulls
+@st.cache_data(ttl=10)
 def load_and_resample_data(symbol, tf):
   base_period = "max" if tf in ["1W", "1M"] else "2y"
 
@@ -293,70 +291,86 @@ curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 
 
-# --- Macro & CRT (Candle Range Theory) Calculations ---
-def get_macro_and_crt_status(sym, length=3):
-  results = {}
-  tf_configs = {"Monthly": "1mo", "Weekly": "1wk", "Daily": "1d"}
-
-  for tf_name, interval_code in tf_configs.items():
-    temp_df = yf.download(
-        sym, period="1y", interval=interval_code, progress=False, threads=False
-    )
-    if not temp_df.empty:
-      if isinstance(temp_df.columns, pd.MultiIndex):
-        temp_df.columns = temp_df.columns.get_level_values(0)
-
-      # Calculate CRT (Using previous completed candle range as reference CRT)
-      if len(temp_df) > 2:
-        prev_candle = temp_df.iloc[-2]
-        curr_candle = temp_df.iloc[-1]
-
-        crt_high = prev_candle["High"]
-        crt_low = prev_candle["Low"]
-        crt_mid = (crt_high + crt_low) / 2
-
-        # Sweep Status Check High or Low
-        sweep_status = "Neutral"
-        if curr_candle["High"] > crt_high and curr_candle["Low"] < crt_low:
-          sweep_status = "Both High & Low Swept"
-        elif curr_candle["High"] > crt_high:
-          sweep_status = "Sweep High"
-        elif curr_candle["Low"] < crt_low:
-          sweep_status = "Sweep Low"
-
-        results[tf_name] = {
-            "crt_val": f"H: {crt_high:.4f} | L: {crt_low:.4f}",
-            "sweep_status": sweep_status,
-        }
-      else:
-        results[tf_name] = {"crt_val": "N/A", "sweep_status": "N/A"}
-    else:
-      results[tf_name] = {"crt_val": "N/A", "sweep_status": "N/A"}
-
-  # H4 Zone Calculation for Daily Macro
-  df_h4 = yf.download(
-      sym, period="59d", interval="60m", progress=False, threads=False
+# --- Dynamic Timeframe CRT & Sweep Calculator ---
+def calculate_crt_for_timeframe(sym, tf_code):
+  temp_df = yf.download(
+      sym, period="2y", interval=tf_code, progress=False, threads=False
   )
-  h4_txt = "H4: NA"
-  if not df_h4.empty:
-    if isinstance(df_h4.columns, pd.MultiIndex):
-      df_h4.columns = df_h4.columns.get_level_values(0)
-    df_h4 = (
-        df_h4.resample("4h")
+  if temp_df.empty or len(temp_df) < 2:
+    return "H: N/A | L: N/A", "N/A"
+
+  if isinstance(temp_df.columns, pd.MultiIndex):
+    temp_df.columns = temp_df.columns.get_level_values(0)
+
+  # Reference previous completed candle for CRT range
+  prev_candle = temp_df.iloc[-2]
+  curr_candle = temp_df.iloc[-1]
+
+  crt_h = prev_candle["High"]
+  crt_l = prev_candle["Low"]
+
+  sweep_val = "Neutral"
+  if curr_candle["High"] > crt_h and curr_candle["Low"] < crt_l:
+    sweep_val = "Sweep High & Low"
+  elif curr_candle["High"] > crt_h:
+    sweep_val = "Sweep High"
+  elif curr_candle["Low"] < crt_l:
+    sweep_val = "Sweep Low"
+
+  return f"H: {crt_h:.4f} | L: {crt_l:.4f}", sweep_val
+
+
+# Map active UI timeframe context to yfinance interval codes
+tf_mapping = {
+    "1M": "1mo",
+    "1W": "1wk",
+    "1D": "1d",
+    "4h": "1h",
+    "1h": "60m",
+    "15m": "15m",
+}
+active_yf_interval = tf_mapping.get(timeframe, "1d")
+
+# If 4h is selected, we fetch hourly and resample; otherwise map directly
+if timeframe == "4h":
+  df_4h_crt = yf.download(
+      ticker, period="60d", interval="60m", progress=False, threads=False
+  )
+  if not df_4h_crt.empty:
+    if isinstance(df_4h_crt.columns, pd.MultiIndex):
+      df_4h_crt.columns = df_4h_crt.columns.get_level_values(0)
+    df_4h_crt = (
+        df_4h_crt.resample("4h")
         .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
         .dropna()
     )
-    if len(df_h4) > length * 2:
-      h4_hi = df_h4["High"].max()
-      h4_lo = df_h4["Low"].min()
-      h4_eq = (h4_hi + h4_lo) / 2
-      h4_close = df_h4["Close"].iloc[-1]
-      zone_str = (
-          "PREM" if h4_close > h4_eq else "DISC" if h4_close < h4_eq else "EQ"
+    if len(df_4h_crt) >= 2:
+      prev_c = df_4h_crt.iloc[-2]
+      curr_c = df_4h_crt.iloc[-1]
+      crt_h, crt_l = prev_c["High"], prev_c["Low"]
+      sweep_val = (
+          "Sweep High & Low"
+          if curr_c["High"] > crt_h and curr_c["Low"] < crt_l
+          else "Sweep High"
+          if curr_c["High"] > crt_h
+          else "Sweep Low"
+          if curr_c["Low"] < crt_l
+          else "Neutral"
       )
-      h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
+      active_crt_val = f"H: {crt_h:.4f} | L: {crt_l:.4f}"
+      active_sweep_status = sweep_val
+    else:
+      active_crt_val, active_sweep_status = "H: N/A | L: N/A", "N/A"
+  else:
+    active_crt_val, active_sweep_status = "H: N/A | L: N/A", "N/A"
+else:
+  active_crt_val, active_sweep_status = calculate_crt_for_timeframe(
+      ticker, active_yf_interval
+  )
 
-  # Trend Bias (Daily EMA50)
+
+# --- Macro Alignment Context ---
+def get_h4_zone_and_daily_bias(sym, length=3):
   df_d = yf.download(
       sym, period="1y", interval="1d", progress=False, threads=False
   )
@@ -369,40 +383,76 @@ def get_macro_and_crt_status(sym, length=3):
         "BULL" if df_d["Close"].iloc[-1] > df_d["EMA50"].iloc[-1] else "BEAR"
     )
 
-  results["Daily_Bias"] = d_bias
-  results["H4_Zone"] = h4_txt
-  return results
+  df_h4 = yf.download(
+      sym, period="59d", interval="60m", progress=False, threads=False
+  )
+  h4_txt = "H4: NA"
+  if not df_h4.empty:
+    if isinstance(df_h4.columns, pd.MultiIndex):
+      df_h4.columns = df_h4.columns.get_level_values(0)
+    df_h4 = (
+        df_h4.resample("4h")
+        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+        .dropna()
+    )
+
+    if len(df_h4) > length * 2:
+      highs = df_h4["High"].values
+      lows = df_h4["Low"].values
+      n = len(df_h4)
+      active_hi = np.nan
+      active_lo = np.nan
+
+      for i in range(length, n - length):
+        is_hi = True
+        for j in range(1, length + 1):
+          if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
+            is_hi = False
+            break
+        if is_hi:
+          active_hi = highs[i]
+
+        is_lo = True
+        for j in range(1, length + 1):
+          if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
+            is_lo = False
+            break
+        if is_lo:
+          active_lo = lows[i]
+
+      if not np.isnan(active_hi) and not np.isnan(active_lo):
+        h4_eq = (active_hi + active_lo) / 2
+        h4_close = df_h4["Close"].iloc[-1]
+        zone_str = (
+            "PREM"
+            if h4_close > h4_eq
+            else "DISC" if h4_close < h4_eq else "EQ"
+        )
+        h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
+
+  return d_bias, h4_txt
 
 
-macro_data = get_macro_and_crt_status(ticker, major_len)
+d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker, major_len)
 
 if timeframe in ["1D", "D"]:
   macro_title = "Macro (Daily Trend / H4 Zone)"
-  macro_text = f"D: {macro_data['Daily_Bias']} | {macro_data['H4_Zone']}"
+  macro_text = f"D: {d_bias} | {h4_zone_txt}"
 elif timeframe in ["1W", "W"]:
   macro_title = "Macro (Weekly / Daily Bias)"
-  macro_text = (
-      f"W: {macro_data['Weekly']['sweep_status']} | D:"
-      f" {macro_data['Daily_Bias']}"
-  )
+  macro_text = f"W: {active_sweep_status} | D: {d_bias}"
 elif timeframe in ["1M", "M"]:
   macro_title = "Macro (Monthly / Weekly Bias)"
-  macro_text = (
-      f"M: {macro_data['Monthly']['sweep_status']} | W:"
-      f" {macro_data['Weekly']['sweep_status']}"
-  )
+  macro_text = f"M: {active_sweep_status} | W: {d_bias}"
 else:
   macro_title = f"Macro Alignment ({timeframe.upper()})"
-  macro_text = (
-      f"Trend Bias: {macro_data['Daily_Bias']} | Zone:"
-      f" {curr_zone.split(' ')[0]}"
-  )
+  macro_text = f"Trend Bias: {d_bias} | Zone: {curr_zone.split(' ')[0]}"
 
 # --- Dashboard UI Layout ---
 st.title("📈 ICT Structure & Liquidity Engine (Live)")
 st.markdown(
     f"**Asset:** `{selected_asset_name}` | **Timeframe:** `{timeframe.upper()}`"
-    " | **Status:** `Live Real-time Feed Active`"
+    " | **Status:** `Live Real-Time Sync Active`"
 )
 
 # Metric Summary Cards
@@ -418,7 +468,7 @@ col3.metric(
     "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A"
 )
 
-# Main Dashboard Table (Including CRT values & Sweep Status checks across Monthly, Weekly, Daily)
+# Main Dashboard Table (Showing Timeframe-Specific CRT & Sweep Status)
 st.subheader(f"📊 Engine Dashboard Summary ({timeframe.upper()})")
 dashboard_data = {
     "Metric / Value": [
@@ -427,13 +477,9 @@ dashboard_data = {
         "Dealing Low",
         f"Current Pricing Zone ({timeframe.upper()})",
         f"Last Structure Event ({timeframe.upper()})",
+        f"CRT Value ({timeframe.upper()})",
+        f"CRT Sweep Status ({timeframe.upper()})",
         "Dynamic Target Objective",
-        "Monthly CRT Value",
-        "Monthly CRT Sweep Status",
-        "Weekly CRT Value",
-        "Weekly CRT Sweep Status",
-        "Daily CRT Value",
-        "Daily CRT Sweep Status",
         macro_title,
     ],
     "Status": [
@@ -442,13 +488,9 @@ dashboard_data = {
         f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A",
         curr_zone,
         curr_event,
+        active_crt_val,
+        active_sweep_status,
         current_target,
-        macro_data["Monthly"]["crt_val"],
-        macro_data["Monthly"]["sweep_status"],
-        macro_data["Weekly"]["crt_val"],
-        macro_data["Weekly"]["sweep_status"],
-        macro_data["Daily"]["crt_val"],
-        macro_data["Daily"]["sweep_status"],
         macro_text,
     ],
 }
