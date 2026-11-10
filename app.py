@@ -241,9 +241,8 @@ curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 
 
-# --- Macro Alignment Context (Fixed H4 Fetching) ---
+# --- Macro Alignment Context ---
 def get_h4_zone_and_daily_bias(sym):
-  # 1. Fetch Daily data for Trend Bias
   df_d = yf.download(
       sym, period="1y", interval="1d", progress=False, threads=False
   )
@@ -256,7 +255,6 @@ def get_h4_zone_and_daily_bias(sym):
         "BULL" if df_d["Close"].iloc[-1] > df_d["EMA50"].iloc[-1] else "BEAR"
     )
 
-  # 2. Fetch H4 data safely using 60m interval resampled to 4h (prevents N/A errors)
   df_h4 = yf.download(
       sym, period="59d", interval="60m", progress=False, threads=False
   )
@@ -286,7 +284,6 @@ def get_h4_zone_and_daily_bias(sym):
 
 d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker)
 
-# Conditional Macro Row formatting based on selected timeframe
 if timeframe in ["1D", "D"]:
   macro_title = "Macro (Daily Trend / H4 Zone)"
   macro_text = f"D: {d_bias} | {h4_zone_txt}"
@@ -344,7 +341,7 @@ dashboard_data = {
 }
 st.table(pd.DataFrame(dashboard_data))
 
-# --- Interactive Plotly Chart with Full Vertical/Horizontal Zoom & Overlays ---
+# --- Interactive Plotly Chart (Default to Pan) ---
 st.subheader(
     f"🕯️ Structure & Liquidity Chart ({selected_asset_name} -"
     f" {timeframe.upper()})"
@@ -352,7 +349,6 @@ st.subheader(
 
 fig = go.Figure()
 
-# 1. Main Price Series
 if chart_style == "Candlestick":
   fig.add_trace(
       go.Candlestick(
@@ -375,7 +371,7 @@ else:
       )
   )
 
-# 2. Major Pivot Dots
+# Major Pivot Dots
 fig.add_trace(
     go.Scatter(
         x=df.index[df["PivotHigh"].notna()],
@@ -396,7 +392,7 @@ fig.add_trace(
     )
 )
 
-# 3. Equilibrium & Dealing Range Lines
+# Lines
 if not np.isnan(curr_eq):
   fig.add_hline(
       y=curr_eq,
@@ -421,18 +417,17 @@ if not np.isnan(curr_dl):
       annotation_text=f"Dealing Low: {curr_dl:.4f}",
   )
 
-# Configure layout for smooth vertical/horizontal zooming (Box zoom enabled by default)
+# Set default interaction mode to 'pan' and enable axis scaling
 fig.update_layout(
     template="plotly_dark",
     xaxis_title="Time",
     yaxis_title="Price",
     height=650,
     xaxis_rangeslider_visible=False,
-    dragmode="zoom",  # Enables box zoom / pinch zoom on mobile
+    dragmode="pan",  # <--- DEFAULT INTERACTION IS NOW PAN
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 
-# Ensure both X and Y axes allow zooming/scaling freely
 fig.update_xaxes(fixedrange=False)
 fig.update_yaxes(fixedrange=False, autorange=True)
 
