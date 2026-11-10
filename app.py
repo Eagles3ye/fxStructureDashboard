@@ -506,7 +506,7 @@ def main():
         interval_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d", "1W": "1W", "1M": "1M"}
         curr_tf = interval_map.get(interval, "1d")
 
-        tf_period = "2y" if interval in ["1d", "4h", "1h"] else "2y"
+        tf_period = "2y" if interval in ["1W", "1M", "1d", "4h", "1h"] else "2y"
 
         tf_results = {}
         for tf_label, tf_interval, tf_len in [
