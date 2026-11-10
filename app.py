@@ -20,7 +20,7 @@ import time
 # HELPER: Fetch OHLC from yfinance
 # ─────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def fetch_ohlc(ticker: str, period: str = "1y", interval: str = "1M") -> pd.DataFrame:
+def fetch_ohlc(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     """Fetch historical OHLC data from Yahoo Finance."""
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
@@ -150,10 +150,9 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     events_log = []
 
     for i in range(major_len, n):
-        # ── New pivot confirmed ──
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
-            last_maj_a_idx = i          # FIX: use actual pivot bar index
+            last_maj_a_idx = i
             maj_a_broken = False
             active_dr_high_bar = i
 
@@ -263,9 +262,8 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     }
 
 
-
 # ─────────────────────────────────────────────────────────────────
-# PLOT:  Plotly figure
+# PLOT: Plotly figure
 # ─────────────────────────────────────────────────────────────────
 def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 show_bos_lines: bool, show_eq_line: bool):
@@ -282,7 +280,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         decreasing_line_color="red",
     ))
 
-    # Major pivot dots (last 100 bars)
+    # Major pivot dots
     if show_major_dots:
         maj_a = result["raw_maj_a"]
         maj_v = result["raw_maj_v"]
@@ -318,7 +316,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines — from pivot confirm bar to breakout bar
+    # BOS / Sweep lines
     if show_bos_lines:
         for ev in result["events"]:
             x1 = df.index[ev["line_x1"]]
@@ -343,27 +341,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 borderwidth=1, borderpad=2,
             )
 
-    # Conditional sweep flags (grey dashed lines)
-    for idx in result.get("sweep_high_flags", {}):
-        if idx > 0 and idx < len(df):
-            fig.add_trace(go.Scatter(
-                x=[df.index[idx - 1], df.index[idx]],
-                y=[df["High"].iloc[idx], df["High"].iloc[idx]],
-                mode="lines",
-                line=dict(color="dimgray", width=1, dash="dash"),
-                showlegend=False, hoverinfo="skip"
-            ))
-    for idx in result.get("sweep_low_flags", {}):
-        if idx > 0 and idx < len(df):
-            fig.add_trace(go.Scatter(
-                x=[df.index[idx - 1], df.index[idx]],
-                y=[df["Low"].iloc[idx], df["Low"].iloc[idx]],
-                mode="lines",
-                line=dict(color="dimgray", width=1, dash="dash"),
-                showlegend=False, hoverinfo="skip"
-            ))
-
-    # Equilibrium line — only across the active dealing range
+    # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
         drh = result["active_dr_high_bar"]
@@ -394,7 +372,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         xaxis_rangeslider_visible=False,
     )
     return fig
-
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -450,13 +427,37 @@ def main():
     # ── Sidebar controls ──
     st.sidebar.header("⚙️ Settings")
 
-    ticker = st.sidebar.text_input("Ticker Symbol", value="BTC-USD")
+    # Predefined ticker symbols list + custom option
+    predefined_tickers = [
+        "BTC-USD", "ETH-USD", "SOL-USD", 
+        "EURUSD=X", "GBPUSD=X", "USDJPY=X", 
+        "GC=F", "CL=F", "AAPL", "NVDA", "TSLA", "MSFT", "CUSTOM"
+    ]
+    
+    selected_ticker_option = st.sidebar.selectbox("Select Ticker Symbol", predefined_tickers, index=0)
+    
+    if selected_ticker_option == "CUSTOM":
+        ticker = st.sidebar.text_input("Enter Custom Ticker", value="BTC-USD")
+    else:
+        ticker = selected_ticker_option
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
         period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y", "5y", "max"], index=2)
     with col2:
-        interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d", "1w", "1m"], index=5)
+        # User dropdown choices mapping to yfinance parameters
+        interval_options = {
+            "1 Minute": "1m",
+            "5 Minutes": "5m",
+            "15 Minutes": "15m",
+            "1 Hour": "1h",
+            "4 Hours": "4h",
+            "1 Daily": "1d",
+            "1 Weekly": "1wk",
+            "1 Monthly": "1mo"
+        }
+        selected_interval_label = st.sidebar.selectbox("Interval", list(interval_options.keys()), index=5)
+        interval = interval_options[selected_interval_label]
 
     st.sidebar.subheader("Live Updates")
     auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=False)
@@ -498,26 +499,27 @@ def main():
         return
 
     n = len(df)
-    st.info(f"Showing {n} bars of {ticker} ({interval}) — Last close: {df['Close'].iloc[-1]:.5f}")
+    st.info(f"Showing {n} bars of {ticker} ({selected_interval_label}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
-    # ── Multi-timeframe data (Fixed with max/5y periods for higher TFs) ──
-    # ── Multi-timeframe data ──
+    # ── Multi-timeframe data with correct Yahoo Finance intervals ("1wk", "1mo") ──
     with st.spinner("Computing multi-timeframe analysis..."):
-        interval_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d", "1W": "1W", "1M": "1M"}
-        curr_tf = interval_map.get(interval, "1d")
-
-        tf_period = "2y" if interval in ["1W", "1M", "1d", "4h", "1h"] else "2y"
+        curr_tf = interval
 
         tf_results = {}
-        for tf_label, tf_interval, tf_len in [
-            ("1M", "1wk", m_len),          # Monthly
-            ("1W", "1wk", w_len),          # Weekly
+        # Mapping correct yfinance interval strings: '1mo' for monthly, '1wk' for weekly
+        tf_configs = [
+            ("1M", "1mo", m_len),
+            ("1W", "1wk", w_len),
             ("1D", "1d", d_len),
             ("240", "4h", h4_len),
             ("60", "1h", h1_len),
             ("15", "15m", m15_len),
-        ]:
+        ]
+
+        for tf_label, tf_interval, tf_len in tf_configs:
             try:
+                # Use max history for higher timeframes to prevent empty datasets
+                tf_period = "max" if tf_label in ["1M", "1W", "1D"] else "2y"
                 tdf = fetch_ohlc(ticker, period=tf_period, interval=tf_interval)
                 if len(tdf) >= tf_len * 2 + 1:
                     bias, zone, eq = tf_zone_data(tdf, tf_len)
@@ -526,7 +528,6 @@ def main():
                     tf_results[tf_label] = (0, 0, np.nan)
             except Exception:
                 tf_results[tf_label] = (0, 0, np.nan)
-
 
     # ── Macro alignment ──
     m_bias, m_zone, m_eq = tf_results.get("1M", (0, 0, np.nan))
@@ -583,16 +584,7 @@ def main():
         macro_text = f"{d_str} | {h1_txt}"
         macro_col = "green" if d_bias == 1 else "red" if d_bias == -1 else "gray"
 
-    elif curr_tf == "15m":
-        macro_title = "Macro (H4 Trend / M15 Zone)"
-        h4_bias_str = "H4: BULL" if h4_bias == 1 else "H4: BEAR" if h4_bias == -1 else "H4: NEUTRAL"
-        m15_txt = "M15: NA" if np.isnan(m15_eq) else f"M15: {m15_eq:.4f}"
-        if not np.isnan(m15_eq):
-            m15_txt += " (PREM)" if last_close > m15_eq else " (DISC)" if last_close < m15_eq else " (EQ)"
-        macro_text = f"{h4_bias_str} | {m15_txt}"
-        macro_col = "green" if h4_bias == 1 else "red" if h4_bias == -1 else "gray"
-
-    else:  # 1m and others
+    else:
         macro_title = "Macro (H4 Trend / M15 Zone)"
         h4_bias_str = "H4: BULL" if h4_bias == 1 else "H4: BEAR" if h4_bias == -1 else "H4: NEUTRAL"
         m15_txt = "M15: NA" if np.isnan(m15_eq) else f"M15: {m15_eq:.4f}"
