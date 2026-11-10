@@ -95,50 +95,10 @@ def tf_zone_data(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
-# CONDITIONAL SWEEP FLAGS (Returning structured lines)
-# ─────────────────────────────────────────────────────────────────
-def compute_sweep_lines(df: pd.DataFrame, lookback: int,
-                        is_bull_aligned: bool, is_bear_aligned: bool,
-                        bear_color: str, bull_color: str):
-    """Compute conditional sweep line definitions using your exact schema."""
-    sweep_lines = []
-    n = len(df)
-    for i in range(lookback + 1, n):
-        prev_high = df["High"].iloc[i - lookback:i].max()
-        prev_low = df["Low"].iloc[i - lookback:i].min()
-
-        bullish_bar = df["Close"].iloc[i] > df["Open"].iloc[i]
-        edge_high = (bullish_bar and df["Close"].iloc[i] < prev_high) or \
-                    ((not bullish_bar) and df["Open"].iloc[i] < prev_high)
-        edge_low = (bullish_bar and df["Open"].iloc[i] > prev_low) or \
-                   ((not bullish_bar) and df["Close"].iloc[i] > prev_low)
-
-        if is_bear_aligned and df["High"].iloc[i] > prev_high and edge_high:
-            sweep_lines.append({
-                "x0": i - lookback,
-                "x1": n - 1,
-                "y": prev_high,
-                "color": bear_color,
-                "width": 1,
-                "dash": "dot",
-            })
-        if is_bull_aligned and df["Low"].iloc[i] < prev_low and edge_low:
-            sweep_lines.append({
-                "x0": i - lookback,
-                "x1": n - 1,
-                "y": prev_low,
-                "color": bull_color,
-                "width": 1,
-                "dash": "dot",
-            })
-    return sweep_lines
-
-
-# ─────────────────────────────────────────────────────────────────
 # MAIN ANALYSIS ENGINE
 # ─────────────────────────────────────────────────────────────────
 def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
-                sweep_lines: list, macro_title: str, macro_text: str, macro_col: str):
+                macro_title: str, macro_text: str, macro_col: str):
     """
     Run the full ICT Structure engine on a DataFrame.
     Returns dict with all computed values for the dashboard + plot data.
@@ -165,8 +125,6 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     event_col = "gray"
     next_target = "Waiting for Event..."
 
-    events_log = []
-
     for i in range(major_len, n):
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
@@ -180,7 +138,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
             maj_v_broken = False
             active_dr_low_bar = i
 
-        # BOS / Sweep — Major A (high)
+        # Track events for dashboard states
         if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
@@ -188,20 +146,11 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     last_event = "BOS Bullish (Body Close)"
                     event_col = "green"
                     next_target = "Target: Next External High / FVG"
-                    events_log.append({
-                        "type": "bos_bull", "idx": i,
-                        "price": last_maj_a_val, "label": "BOS"
-                    })
                 else:
                     last_event = "LIQUIDITY SWEEP HIGH (Wick)"
                     event_col = "red"
                     next_target = "Target: EQ (50%) -> Range Low"
-                    events_log.append({
-                        "type": "sweep_high", "idx": i,
-                        "price": last_maj_a_val, "label": "SWEEP"
-                    })
 
-        # BOS / Sweep — Major V (low)
         if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
@@ -209,18 +158,10 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     last_event = "BOS Bearish (Body Close)"
                     event_col = "red"
                     next_target = "Target: Next External Low / FVG"
-                    events_log.append({
-                        "type": "bos_bear", "idx": i,
-                        "price": last_maj_v_val, "label": "BOS"
-                    })
                 else:
                     last_event = "LIQUIDITY SWEEP LOW (Wick)"
                     event_col = "green"
                     next_target = "Target: EQ (50%) -> Range High"
-                    events_log.append({
-                        "type": "sweep_low", "idx": i,
-                        "price": last_maj_v_val, "label": "SWEEP"
-                    })
 
     # ── Dealing Range ──
     dealing_high = last_maj_a_val if not np.isnan(last_maj_a_val) else np.nan
@@ -248,7 +189,6 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         macro_text = "N/A"
 
     return {
-        "events": events_log,
         "dealing_high": dealing_high,
         "dealing_low": dealing_low,
         "eq_price": eq_price,
@@ -264,7 +204,6 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         "active_dr_low_bar": active_dr_low_bar,
         "raw_maj_a": raw_maj_a,
         "raw_maj_v": raw_maj_v,
-        "sweep_lines": sweep_lines,
         "df": df,
     }
 
@@ -273,7 +212,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
 # PLOT: Build Plotly figure
 # ─────────────────────────────────────────────────────────────────
 def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
-                show_bos_lines: bool, show_eq_line: bool):
+                show_eq_line: bool):
     df = result["df"]
     fig = make_subplots(rows=1, cols=1)
 
@@ -322,56 +261,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS & Sweep Lines using your exact chart_lines loop structure
-    if show_bos_lines:
-        chart_lines = []
-        
-        # 1. Add BOS and Event lines
-        for ev in result["events"]:
-            idx = ev["idx"]
-            price = ev["price"]
-            label = ev["label"]
-            ev_type = ev["type"]
-            is_bos = "bos" in ev_type
-            
-            color = "green" if "bull" in ev_type or ev_type == "sweep_low" else "red"
-            
-            chart_lines.append({
-                "x0": idx,
-                "x1": len(df) - 1,
-                "y": price,
-                "color": color,
-                "width": 2 if is_bos else 1,
-                "dash": "solid" if is_bos else "dash"
-            })
-            
-            fig.add_annotation(
-                x=idx, y=price, text=label,
-                showarrow=True, arrowhead=2,
-                font=dict(color="white", size=9),
-                bgcolor=color, bordercolor=color,
-                borderwidth=1, borderpad=2,
-                row=1, col=1
-            )
-
-        # 2. Add conditional sweep lines using your exact dictionary format
-        for s_line in result["sweep_lines"]:
-            chart_lines.append(s_line)
-
-        # 3. Render all chart lines cleanly in a single loop
-        for line in chart_lines:
-            fig.add_shape(
-                type="line",
-                x0=line["x0"],
-                y0=line["y"],
-                x1=line["x1"],
-                y1=line["y"],
-                line=dict(
-                    color=line["color"], width=line["width"], dash=line["dash"]
-                ),
-                row=1, col=1
-            )
-
     # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
@@ -389,7 +278,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         )
 
     fig.update_layout(
-        title="ICT Structure & Liquidity Sweep Engine [v6]",
+        title="ICT Structure Engine [v6]",
         xaxis_title="Date", yaxis_title="Price",
         template="plotly_dark", height=650,
         xaxis_rangeslider_visible=False,
@@ -445,7 +334,7 @@ def render_dashboard(result: dict, text_size: str):
 # ═════════════════════════════════════════════════════════════════
 def main():
     st.set_page_config(page_title="ICT Structure Engine v6", layout="wide")
-    st.title("📊 ICT Structure & Liquidity Sweep Engine [v6]")
+    st.title("📊 ICT Structure Engine [v6]")
 
     # ── Sidebar controls ──
     st.sidebar.header("⚙️ Settings")
@@ -470,24 +359,18 @@ def main():
     h1_len = st.sidebar.slider("H1 Strength", 1, 20, 1)
     m15_len = st.sidebar.slider("M15 Strength", 1, 20, 1)
 
-    st.sidebar.subheader("Pivot & Sweep Settings")
+    st.sidebar.subheader("Pivot & Range Settings")
     major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
-    lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
+    lookback = st.sidebar.slider("Lookback Bars", 1, 20, 5)
 
     st.sidebar.subheader("Chart Visual Settings")
     show_major_dots = st.sidebar.checkbox("Show Major Pivot Dots", value=True)
     show_range_dots = st.sidebar.checkbox("Show Active Dealing Range Dots", value=True)
-    show_bos_lines = st.sidebar.checkbox("Show BOS / Sweep Lines", value=True)
     show_eq_line = st.sidebar.checkbox("Show Equilibrium (EQ) Line", value=True)
 
     st.sidebar.subheader("Dashboard Settings")
     table_pos = st.sidebar.radio("Table Position", ["top", "bottom"], index=0)
     text_size = st.sidebar.selectbox("Text Size", ["tiny", "small", "normal", "large"], index=2)
-
-    st.sidebar.subheader("Color Settings")
-    bull_color = st.sidebar.color_picker("Bullish / Discount", "#00FF00")
-    bear_color = st.sidebar.color_picker("Bearish / Premium", "#FF0000")
-    eq_color = st.sidebar.color_picker("Equilibrium", "#FFFF00")
 
     # ── Fetch main data ──
     with st.spinner(f"Fetching {ticker} data ({interval})..."):
@@ -532,14 +415,6 @@ def main():
     h4_bias, h4_zone, h4_eq = tf_results.get("240", (0, 0, np.nan))
     h1_bias, h1_zone, h1_eq = tf_results.get("60", (0, 0, np.nan))
     m15_bias, m15_zone, m15_eq = tf_results.get("15", (0, 0, np.nan))
-
-    macroWeeklyH4Bull = (w_bias == 1 and h4_zone == -1)
-    macroWeeklyH4Bear = (w_bias == -1 and h4_zone == 1)
-    macroDailyH1Bull = (d_bias == 1 and h1_zone == -1)
-    macroDailyH1Bear = (d_bias == -1 and h1_zone == 1)
-
-    is_bull_aligned = macroWeeklyH4Bull or macroDailyH1Bull
-    is_bear_aligned = macroWeeklyH4Bear or macroDailyH1Bear
 
     # ── Macro row text based on current timeframe ──
     macro_title = ""
@@ -594,47 +469,4 @@ def main():
         h4_bias_str = "H4: BULL" if h4_bias == 1 else "H4: BEAR" if h4_bias == -1 else "H4: NEUTRAL"
         m15_txt = "M15: NA" if np.isnan(m15_eq) else f"M15: {m15_eq:.4f}"
         if not np.isnan(m15_eq):
-            m15_txt += " (PREM)" if last_close > m15_eq else " (DISC)" if last_close < m15_eq else " (EQ)"
-        macro_text = f"{h4_bias_str} | {m15_txt}"
-        macro_col = "green" if h4_bias == 1 else "red" if h4_bias == -1 else "gray"
-
-    # ── Compute conditional sweep lines using your exact dictionary format ──
-    sweep_lines = compute_sweep_lines(
-        df, lookback, is_bull_aligned, is_bear_aligned, bear_color, bull_color
-    )
-
-    # ── Run ICT analysis ──
-    result = analyze_ict(
-        df, major_len, lookback,
-        sweep_lines, macro_title, macro_text, macro_col
-    )
-
-    if result is None:
-        st.warning("Not enough data for the selected major swing length. Try a smaller length or more data.")
-        return
-
-    # ── Render dashboard ──
-    if table_pos == "top":
-        render_dashboard(result, text_size)
-        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots,
-                                    show_bos_lines, show_eq_line), use_container_width=True)
-    else:
-        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots,
-                                    show_bos_lines, show_eq_line), use_container_width=True)
-        render_dashboard(result, text_size)
-
-    # ── Show raw data toggle ──
-    with st.expander("📋 Raw Data (OHLC)"):
-        st.dataframe(df.tail(50).style.format({
-            "Open": "{:.5f}", "High": "{:.5f}",
-            "Low": "{:.5f}", "Close": "{:.5f}"
-        }))
-
-    # ── Auto-Refresh Loop for Live Updates ──
-    if auto_refresh:
-        time.sleep(refresh_rate)
-        st.rerun()
-
-
-if __name__ == "__main__":
-    main()
+            m15
