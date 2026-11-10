@@ -298,10 +298,10 @@ curr_event = df["Event"].iloc[-1]
 active_structural_trend = df["StructuralTrend"].iloc[-1]
 
 
-# --- Structure-Driven Conditional CRT & Sweep Engine ---
+# --- Structure-Driven Conditional CRT & Sweep Engine (With Line Plotting) ---
 def compute_structural_crt_sweep(data, lb_bars, trend):
   if len(data) < lb_bars + 1:
-    return "H: N/A | L: N/A", "Sweep: N/A"
+    return "H: N/A | L: N/A", "Sweep: N/A", None, None
 
   ref_slice = data.iloc[-(lb_bars + 1) : -1]
   if ref_slice.empty:
@@ -314,29 +314,38 @@ def compute_structural_crt_sweep(data, lb_bars, trend):
   curr_h = curr_bar["High"]
   curr_l = curr_bar["Low"]
 
-  # Structure-driven conditional sweep:
-  # Bullish Structure Trend -> Check for Low Sweep
-  # Bearish Structure Trend -> Check for High Sweep
+  sweep_line_level = None
+  sweep_line_color = None
+
   if trend == "BULLISH":
     swept = curr_l < crt_l
     sweep_str = "Low Swept (Bullish Setup)" if swept else "Waiting for Low Sweep"
+    if swept:
+      sweep_line_level = crt_l
+      sweep_line_color = BULL_COLOR
   else:
     swept = curr_h > crt_h
     sweep_str = (
         "High Swept (Bearish Setup)" if swept else "Waiting for High Sweep"
     )
+    if swept:
+      sweep_line_level = crt_h
+      sweep_line_color = BEAR_COLOR
 
   crt_val_str = f"H: {crt_h:.4f} | L: {crt_l:.4f}"
   sweep_status_str = f"Sweep: {sweep_str}"
 
-  return crt_val_str, sweep_status_str
+  return crt_val_str, sweep_status_str, sweep_line_level, sweep_line_color
 
 
-active_crt_val, active_sweep_status = compute_structural_crt_sweep(
-    df, lookback, active_structural_trend
-)
+(
+    active_crt_val,
+    active_sweep_status,
+    crt_sweep_level,
+    crt_sweep_color,
+) = compute_structural_crt_sweep(df, lookback, active_structural_trend)
 
-# --- Macro Alignment Context (Structure-Based) ---
+# --- Macro Alignment Context ---
 macro_title = f"Structural Trend Bias ({timeframe.upper()})"
 macro_text = f"Trend: {active_structural_trend} | Zone: {curr_zone.split(' ')[0]}"
 
@@ -451,6 +460,16 @@ for line in chart_lines:
       line=dict(
           color=line["color"], width=line["width"], dash=line["dash"]
       ),
+  )
+
+# Plot Active Conditional CRT Sweep Line if triggered
+if crt_sweep_level is not None:
+  fig.add_hline(
+      y=crt_sweep_level,
+      line_dash="dot",
+      line_color=crt_sweep_color,
+      annotation_text=f"CRT Sweep Level: {crt_sweep_level:.4f}",
+      annotation_position="top left",
   )
 
 # Lines
