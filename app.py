@@ -14,19 +14,16 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────────────────────────
 # HELPER: Fetch OHLC from yfinance
 # ─────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)  # cache 5 minutes
+@st.cache_data(ttl=300)
 def fetch_ohlc(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     """Fetch historical OHLC data from Yahoo Finance."""
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
-        st.error(f"No data returned for {ticker}")
         return pd.DataFrame()
-    # Flatten MultiIndex columns if present
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.reset_index(inplace=True)
@@ -40,10 +37,10 @@ def detect_pivots(df: pd.DataFrame, length: int):
     """Return series of pivot highs (NaN except at pivot) and pivot lows."""
     n = len(df)
     pivot_high = pd.Series(np.nan, index=df.index)
-    pivot_low  = pd.Series(np.nan, index=df.index)
+    pivot_low = pd.Series(np.nan, index=df.index)
     for i in range(length, n - length):
         window_high = df["High"].iloc[i - length : i + length + 1]
-        window_low  = df["Low"].iloc[i - length : i + length + 1]
+        window_low = df["Low"].iloc[i - length : i + length + 1]
         if df["High"].iloc[i] == window_high.max():
             pivot_high.iloc[i] = df["High"].iloc[i]
         if df["Low"].iloc[i] == window_low.min():
@@ -100,14 +97,40 @@ def tf_zone_data(df: pd.DataFrame, length: int):
 
 
 # ─────────────────────────────────────────────────────────────────
+# CONDITIONAL SWEEP FLAGS
+# ─────────────────────────────────────────────────────────────────
+def compute_sweep_flags(df: pd.DataFrame, lookback: int,
+                        is_bull_aligned: bool, is_bear_aligned: bool):
+    """Compute sweep flags for the current timeframe."""
+    sweep_high_flags = {}
+    sweep_low_flags = {}
+    n = len(df)
+    for i in range(lookback + 1, n):
+        prev_high = df["High"].iloc[i - lookback:i].max()
+        prev_low = df["Low"].iloc[i - lookback:i].min()
+
+        bullish_bar = df["Close"].iloc[i] > df["Open"].iloc[i]
+        edge_high = (bullish_bar and df["Close"].iloc[i] < prev_high) or \
+                    ((not bullish_bar) and df["Open"].iloc[i] < prev_high)
+        edge_low = (bullish_bar and df["Open"].iloc[i] > prev_low) or \
+                   ((not bullish_bar) and df["Close"].iloc[i] > prev_low)
+
+        if is_bear_aligned and df["High"].iloc[i] > prev_high and edge_high:
+            sweep_high_flags[i] = True
+        if is_bull_aligned and df["Low"].iloc[i] < prev_low and edge_low:
+            sweep_low_flags[i] = True
+    return sweep_high_flags, sweep_low_flags
+
+
+# ─────────────────────────────────────────────────────────────────
 # MAIN ANALYSIS ENGINE
 # ─────────────────────────────────────────────────────────────────
 def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
-                tf_data: dict) -> dict:
+                sweep_high_flags: dict, sweep_low_flags: dict,
+                is_bull_aligned: bool, is_bear_aligned: bool,
+                macro_title: str, macro_text: str, macro_col: str):
     """
     Run the full ICT Structure engine on a DataFrame.
-    tf_data: dict mapping timeframe string -> (bias, zone, eq)
-             e.g. {"1M": (1,1,100.5), "1W": (-1,-1,95.0), ...}
     Returns dict with all computed values for the dashboard + plot data.
     """
     n = len(df)
@@ -119,12 +142,12 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
 
     # ── State trackers ──
     last_maj_a_val = np.nan
-    last_maj_a_time_idx = -1
+    last_maj_a_idx = -1
     maj_a_broken = False
     active_dr_high_bar = -1
 
     last_maj_v_val = np.nan
-    last_maj_v_time_idx = -1
+    last_maj_v_idx = -1
     maj_v_broken = False
     active_dr_low_bar = -1
 
@@ -132,24 +155,24 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     event_col = "gray"
     next_target = "Waiting for Event..."
 
-    events_log = []  # for plotting labels/lines
+    events_log = []
 
     for i in range(major_len, n):
         # Update major pivot A
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
-            last_maj_a_time_idx = i
+            last_maj_a_idx = i
             maj_a_broken = False
             active_dr_high_bar = i
 
         if not np.isnan(raw_maj_v.iloc[i]):
             last_maj_v_val = raw_maj_v.iloc[i]
-            last_maj_v_time_idx = i
+            last_maj_v_idx = i
             maj_v_broken = False
             active_dr_low_bar = i
 
         # BOS / Sweep — Major A (high)
-        if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_time_idx:
+        if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
                     maj_a_broken = True
@@ -170,7 +193,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     })
 
         # BOS / Sweep — Major V (low)
-        if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_time_idx:
+        if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
                     maj_v_broken = True
@@ -192,7 +215,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
 
     # ── Dealing Range ──
     dealing_high = last_maj_a_val if not np.isnan(last_maj_a_val) else np.nan
-    dealing_low  = last_maj_v_val if not np.isnan(last_maj_v_val) else np.nan
+    dealing_low = last_maj_v_val if not np.isnan(last_maj_v_val) else np.nan
 
     if not np.isnan(dealing_high) and not np.isnan(dealing_low):
         eq_price = (dealing_high + dealing_low) / 2
@@ -210,57 +233,10 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         active_zone = "N/A"
         zone_col = "gray"
 
-    # ── Conditional Sweep (1H+ only) ──
-    sweep_high_bars = []
-    sweep_low_bars  = []
-    is_allowed_tf = True  # streamlit is always "1H+" by default
-
-    if is_allowed_tf and n > lookback + 1:
-        for i in range(lookback + 1, n):
-            prev_high = df["High"].iloc[i - lookback:i].max()  # high[1:lookback+1]
-            prev_low  = df["Low"].iloc[i - lookback:i].min()
-
-            bullish_bar = df["Close"].iloc[i] > df["Open"].iloc[i]
-            edge_high = bullish_bar and (df["Close"].iloc[i] < prev_high) or (not bullish_bar and (df["Open"].iloc[i] < prev_high))
-            edge_low  = bullish_bar and (df["Open"].iloc[i] > prev_low)  or (not bullish_bar and (df["Close"].iloc[i] > prev_low))
-
-            is_bear_aligned = False
-            is_bull_aligned = False
-            # Check macro alignment from tf_data
-            for tf, (b, z, e) in tf_data.items():
-                pass  # will use passed-in alignment flags below
-
-            # Use the pre-computed alignment flags
-            if sweep_high_flags.get(i, False):
-                sweep_high_bars.append(i)
-            if sweep_low_flags.get(i, False):
-                sweep_low_bars.append(i)
-
-    # ── Macro alignment (determined by current timeframe) ──
-    # Default to Daily view in Streamlit
-    macro_title = "Macro (Daily Trend / H4 Zone)"
-    macro_text  = ""
-    macro_col   = "gray"
-
-    # Fetch macro data
-    d_bias, d_zone, d_eq = tf_data.get("1D", (0, 0, np.nan))
-    h4_bias, h4_zone, h4_eq = tf_data.get("240", (0, 0, np.nan))
-
-    d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
-
-    if not np.isnan(h4_eq):
-        h4_txt = f"H4: {h4_eq:.4f}"
-        if df["Close"].iloc[-1] > h4_eq:
-            h4_txt += " (PREM)"
-        elif df["Close"].iloc[-1] < h4_eq:
-            h4_txt += " (DISC)"
-        else:
-            h4_txt += " (EQ)"
-    else:
-        h4_txt = "H4: NA"
-
-    macro_text = f"{d_str} | {h4_txt}"
-    macro_col = "green" if d_bias == 1 else "red" if d_bias == -1 else "gray"
+    if macro_title == "":
+        macro_title = "Macro"
+    if macro_text == "":
+        macro_text = "N/A"
 
     return {
         "events": events_log,
@@ -279,8 +255,8 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         "active_dr_low_bar": active_dr_low_bar,
         "raw_maj_a": raw_maj_a,
         "raw_maj_v": raw_maj_v,
-        "sweep_high_bars": sweep_high_bars,
-        "sweep_low_bars": sweep_low_bars,
+        "sweep_high_flags": sweep_high_flags,
+        "sweep_low_flags": sweep_low_flags,
         "df": df,
     }
 
@@ -346,16 +322,25 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
             label = ev["label"]
             ev_type = ev["type"]
             color = "green" if "Bull" in ev_type or ev_type == "sweep_low" else "red"
-            # Horizontal line
-            fig.add_hline(y=price, line_color=color, line_dash="solid" if "BOS" in label else "dash",
+            fig.add_hline(y=price, line_color=color,
+                          line_dash="solid" if "BOS" in label else "dash",
                           line_width=2, row=1, col=1)
-            # Label
             fig.add_annotation(x=idx, y=price, text=label,
                                showarrow=True, arrowhead=2,
                                font=dict(color="white", size=10),
                                bgcolor=color, bordercolor=color,
                                borderwidth=1, borderpad=2,
                                row=1, col=1)
+
+    # Conditional sweep flags (grey lines)
+    for idx in result.get("sweep_high_flags", {}):
+        if idx > 0 and idx < len(df):
+            fig.add_hline(y=df["High"].iloc[idx], line_color="dimgray",
+                          line_dash="dash", line_width=1, row=1, col=1)
+    for idx in result.get("sweep_low_flags", {}):
+        if idx > 0 and idx < len(df):
+            fig.add_hline(y=df["Low"].iloc[idx], line_color="dimgray",
+                          line_dash="dash", line_width=1, row=1, col=1)
 
     # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
@@ -366,47 +351,36 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                            showarrow=False, font=dict(color="yellow", size=10),
                            row=1, col=1)
 
-    # Sweep flags (grey lines for 1H+)
-    for idx in result.get("sweep_high_bars", []):
-        if idx > 0 and idx < len(df):
-            fig.add_hline(y=df["High"].iloc[idx], line_color="dimgray",
-                          line_dash="dash", line_width=1, row=1, col=1)
-    for idx in result.get("sweep_low_bars", []):
-        if idx > 0 and idx < len(df):
-            fig.add_hline(y=df["Low"].iloc[idx], line_color="dimgray",
-                          line_dash="dash", line_width=1, row=1, col=1)
-
     fig.update_layout(
         title="ICT Structure & Liquidity Sweep Engine [v6]",
         xaxis_title="Date", yaxis_title="Price",
-        template="plotly_dark", height=600,
+        template="plotly_dark", height=650,
         xaxis_rangeslider_visible=False,
     )
     return fig
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD TABLE (Streamlit)
+# BUILD DASHBOARD
 # ─────────────────────────────────────────────────────────────────
 def render_dashboard(result: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"**ICT STRUCTURE ENGINE**", font=fs + 4)
-    with col2:
-        st.markdown(f"**METRIC / VALUE**", font=fs + 4)
+    st.markdown(f"**ICT STRUCTURE ENGINE**  |  **METRIC / VALUE**", font=fs + 4)
 
     data = [
-        ("Dealing High", f"{result['dealing_high']:.2f}" if not np.isnan(result['dealing_high']) else "N/A", "red"),
-        ("Equilibrium (50% EQ)", f"{result['eq_price']:.2f}" if not np.isnan(result['eq_price']) else "N/A", "yellow"),
-        ("Dealing Low", f"{result['dealing_low']:.2f}" if not np.isnan(result['dealing_low']) else "N/A", "green"),
-        ("Current Pricing Zone", result["active_zone"], result["zone_col"]),
-        ("Last Structure Event", result["last_event"], result["event_col"]),
-        ("Dynamic Target Objective", result["next_target"], result["event_col"]),
+        ("Dealing High",
+         f"{result['dealing_high']:.2f}" if not np.isnan(result['dealing_high']) else "N/A"),
+        ("Equilibrium (50% EQ)",
+         f"{result['eq_price']:.2f}" if not np.isnan(result['eq_price']) else "N/A"),
+        ("Dealing Low",
+         f"{result['dealing_low']:.2f}" if not np.isnan(result['dealing_low']) else "N/A"),
+        ("Current Pricing Zone", result["active_zone"]),
+        ("Last Structure Event", result["last_event"]),
+        ("Dynamic Target Objective", result["next_target"]),
     ]
 
-    for metric, value, color in data:
+    for metric, value in data:
         c1, c2 = st.columns([1, 2])
         with c1:
             st.markdown(f"`{metric}`", font=fs)
@@ -415,35 +389,6 @@ def render_dashboard(result: dict, text_size: str):
 
     st.markdown(f"**{result['macro_title']}**", font=fs + 2)
     st.markdown(f"`{result['macro_text']}`", font=fs)
-
-
-# ─────────────────────────────────────────────────────────────────
-# SWEEP FLAGS (computed separately to avoid circular reference)
-# ─────────────────────────────────────────────────────────────────
-sweep_high_flags = {}
-sweep_low_flags  = {}
-
-
-def compute_sweep_flags(df: pd.DataFrame, lookback: int,
-                        is_bull_aligned: bool, is_bear_aligned: bool):
-    global sweep_high_flags, sweep_low_flags
-    sweep_high_flags = {}
-    sweep_low_flags = {}
-    n = len(df)
-    for i in range(lookback + 1, n):
-        prev_high = df["High"].iloc[i - lookback:i].max()
-        prev_low  = df["Low"].iloc[i - lookback:i].min()
-
-        bullish_bar = df["Close"].iloc[i] > df["Open"].iloc[i]
-        edge_high = (bullish_bar and df["Close"].iloc[i] < prev_high) or \
-                    ((not bullish_bar) and df["Open"].iloc[i] < prev_high)
-        edge_low = (bullish_bar and df["Open"].iloc[i] > prev_low) or \
-                   ((not bullish_bar) and df["Close"].iloc[i] > prev_low)
-
-        if is_bear_aligned and df["High"].iloc[i] > prev_high and edge_high:
-            sweep_high_flags[i] = True
-        if is_bull_aligned and df["Low"].iloc[i] < prev_low and edge_low:
-            sweep_low_flags[i] = True
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -465,22 +410,22 @@ def main():
         interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d"], index=5)
 
     st.sidebar.subheader("Timeframe Strength Settings")
-    m_len  = st.sidebar.slider("Monthly Strength", 1, 12, 1)
-    w_len  = st.sidebar.slider("Weekly Strength", 1, 12, 1)
-    d_len  = st.sidebar.slider("Daily Strength", 1, 20, 1)
+    m_len = st.sidebar.slider("Monthly Strength", 1, 12, 1)
+    w_len = st.sidebar.slider("Weekly Strength", 1, 12, 1)
+    d_len = st.sidebar.slider("Daily Strength", 1, 20, 1)
     h4_len = st.sidebar.slider("H4 Strength", 1, 20, 1)
     h1_len = st.sidebar.slider("H1 Strength", 1, 20, 1)
     m15_len = st.sidebar.slider("M15 Strength", 1, 20, 1)
 
     st.sidebar.subheader("Pivot & Sweep Settings")
     major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
-    lookback  = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
+    lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
 
     st.sidebar.subheader("Chart Visual Settings")
     show_major_dots = st.sidebar.checkbox("Show Major Pivot Dots", value=True)
     show_range_dots = st.sidebar.checkbox("Show Active Dealing Range Dots", value=True)
-    show_bos_lines  = st.sidebar.checkbox("Show BOS / Sweep Lines", value=True)
-    show_eq_line    = st.sidebar.checkbox("Show Equilibrium (EQ) Line", value=True)
+    show_bos_lines = st.sidebar.checkbox("Show BOS / Sweep Lines", value=True)
+    show_eq_line = st.sidebar.checkbox("Show Equilibrium (EQ) Line", value=True)
 
     st.sidebar.subheader("Dashboard Settings")
     table_pos = st.sidebar.radio("Table Position", ["top", "bottom"], index=0)
@@ -489,25 +434,152 @@ def main():
     st.sidebar.subheader("Color Settings")
     bull_color = st.sidebar.color_picker("Bullish / Discount", "#00FF00")
     bear_color = st.sidebar.color_picker("Bearish / Premium", "#FF0000")
-    eq_color   = st.sidebar.color_picker("Equilibrium", "#FFFF00")
+    eq_color = st.sidebar.color_picker("Equilibrium", "#FFFF00")
 
-    # ── Fetch data ──
-    with st.spinner(f"Fetching {ticker} data..."):
+    # ── Fetch main data ──
+    with st.spinner(f"Fetching {ticker} data ({interval})..."):
         df = fetch_ohlc(ticker, period=period, interval=interval)
 
     if df.empty:
-        st.warning("No data available. Check ticker and try again.")
+        st.warning("No data available. Check ticker symbol and try again.")
         return
 
     n = len(df)
-    st.info(f"Showing {n} bars of {ticker} ({interval}) — Last: {df.iloc[-1].name}")
+    st.info(f"Showing {n} bars of {ticker} ({interval}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
     # ── Multi-timeframe data ──
     with st.spinner("Computing multi-timeframe analysis..."):
-        # Map interval to TF string
-        interval_map = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
-        curr_tf = interval_map.get(interval, "D")
+        interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
+        curr_tf = interval_map.get(interval, "1d")
 
-        tf_data = {}
-        for tf_label, tf_len in [("1M", m_len), ("1W", w_len), ("1D", d_len),
-                                  ("240", h4_len), ("60", h1_len), ("15", m15_len)
+        tf_period = "1y" if interval in ["1d", "4h", "1h"] else "2y"
+
+        tf_results = {}
+        for tf_label, tf_interval, tf_len in [
+            ("1M", "1w", m_len),
+            ("1W", "1d", w_len),
+            ("1D", "1d", d_len),
+            ("240", "4h", h4_len),
+            ("60", "1h", h1_len),
+            ("15", "15m", m15_len),
+        ]:
+            try:
+                tdf = fetch_ohlc(ticker, period=tf_period, interval=tf_interval)
+                if len(tdf) >= tf_len * 2 + 1:
+                    bias, zone, eq = tf_zone_data(tdf, tf_len)
+                    tf_results[tf_label] = (bias, zone, eq)
+                else:
+                    tf_results[tf_label] = (0, 0, np.nan)
+            except Exception:
+                tf_results[tf_label] = (0, 0, np.nan)
+
+    # ── Macro alignment ──
+    m_bias, m_zone, m_eq = tf_results.get("1M", (0, 0, np.nan))
+    w_bias, w_zone, w_eq = tf_results.get("1W", (0, 0, np.nan))
+    d_bias, d_zone, d_eq = tf_results.get("1D", (0, 0, np.nan))
+    h4_bias, h4_zone, h4_eq = tf_results.get("240", (0, 0, np.nan))
+    h1_bias, h1_zone, h1_eq = tf_results.get("60", (0, 0, np.nan))
+    m15_bias, m15_zone, m15_eq = tf_results.get("15", (0, 0, np.nan))
+
+    macroWeeklyH4Bull = (w_bias == 1 and h4_zone == -1)
+    macroWeeklyH4Bear = (w_bias == -1 and h4_zone == 1)
+    macroDailyH1Bull = (d_bias == 1 and h1_zone == -1)
+    macroDailyH1Bear = (d_bias == -1 and h1_zone == 1)
+
+    is_bull_aligned = macroWeeklyH4Bull or macroDailyH1Bull
+    is_bear_aligned = macroWeeklyH4Bear or macroDailyH1Bear
+
+    # ── Macro row text based on current timeframe ──
+    macro_title = ""
+    macro_text = ""
+    macro_col = "gray"
+
+    last_close = df["Close"].iloc[-1]
+
+    if curr_tf == "1w":
+        macro_title = "Macro (Monthly / Weekly Bias)"
+        m_str = "M: BULL" if m_bias == 1 else "M: BEAR" if m_bias == -1 else "M: NEUTRAL"
+        w_str = "W: BULL" if w_bias == 1 else "W: BEAR" if w_bias == -1 else "W: NEUTRAL"
+        macro_text = f"{m_str} | {w_str}"
+        macro_col = "green" if m_bias == 1 else "red" if m_bias == -1 else "gray"
+
+    elif curr_tf == "1d":
+        macro_title = "Macro (Weekly / Daily Bias)"
+        w_str = "W: BULL" if w_bias == 1 else "W: BEAR" if w_bias == -1 else "W: NEUTRAL"
+        d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
+        macro_text = f"{w_str} | {d_str}"
+        macro_col = "green" if w_bias == 1 else "red" if w_bias == -1 else "gray"
+
+    elif curr_tf == "4h":
+        macro_title = "Macro (Daily Trend / H4 Zone)"
+        d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
+        h4_txt = "H4: NA" if np.isnan(h4_eq) else f"H4: {h4_eq:.4f}"
+        if not np.isnan(h4_eq):
+            h4_txt += " (PREM)" if last_close > h4_eq else " (DISC)" if last_close < h4_eq else " (EQ)"
+        macro_text = f"{d_str} | {h4_txt}"
+        macro_col = "green" if d_bias == 1 else "red" if d_bias == -1 else "gray"
+
+    elif curr_tf == "1h":
+        macro_title = "Macro (Daily Trend / H1 Zone)"
+        d_str = "D: BULL" if d_bias == 1 else "D: BEAR" if d_bias == -1 else "D: NEUTRAL"
+        h1_txt = "H1: NA" if np.isnan(h1_eq) else f"H1: {h1_eq:.4f}"
+        if not np.isnan(h1_eq):
+            h1_txt += " (PREM)" if last_close > h1_eq else " (DISC)" if last_close < h1_eq else " (EQ)"
+        macro_text = f"{d_str} | {h1_txt}"
+        macro_col = "green" if d_bias == 1 else "red" if d_bias == -1 else "gray"
+
+    elif curr_tf == "15m":
+        macro_title = "Macro (H4 Trend / M15 Zone)"
+        h4_bias_str = "H4: BULL" if h4_bias == 1 else "H4: BEAR" if h4_bias == -1 else "H4: NEUTRAL"
+        m15_txt = "M15: NA" if np.isnan(m15_eq) else f"M15: {m15_eq:.4f}"
+        if not np.isnan(m15_eq):
+            m15_txt += " (PREM)" if last_close > m15_eq else " (DISC)" if last_close < m15_eq else " (EQ)"
+        macro_text = f"{h4_bias_str} | {m15_txt}"
+        macro_col = "green" if h4_bias == 1 else "red" if h4_bias == -1 else "gray"
+
+    else:  # 1m and others
+        macro_title = "Macro (H4 Trend / M15 Zone)"
+        h4_bias_str = "H4: BULL" if h4_bias == 1 else "H4: BEAR" if h4_bias == -1 else "H4: NEUTRAL"
+        m15_txt = "M15: NA" if np.isnan(m15_eq) else f"M15: {m15_eq:.4f}"
+        if not np.isnan(m15_eq):
+            m15_txt += " (PREM)" if last_close > m15_eq else " (DISC)" if last_close < m15_eq else " (EQ)"
+        macro_text = f"{h4_bias_str} | {m15_txt}"
+        macro_col = "green" if h4_bias == 1 else "red" if h4_bias == -1 else "gray"
+
+    # ── Compute sweep flags ──
+    sweep_high_flags, sweep_low_flags = compute_sweep_flags(
+        df, lookback, is_bull_aligned, is_bear_aligned
+    )
+
+    # ── Run ICT analysis ──
+    result = analyze_ict(
+        df, major_len, lookback,
+        sweep_high_flags, sweep_low_flags,
+        is_bull_aligned, is_bear_aligned,
+        macro_title, macro_text, macro_col
+    )
+
+    if result is None:
+        st.warning("Not enough data for the selected major swing length. Try a smaller length or more data.")
+        return
+
+    # ── Render dashboard ──
+    if table_pos == "top":
+        render_dashboard(result, text_size)
+        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots,
+                                    show_bos_lines, show_eq_line), use_container_width=True)
+    else:
+        st.plotly_chart(build_chart(result, show_major_dots, show_range_dots,
+                                    show_bos_lines, show_eq_line), use_container_width=True)
+        render_dashboard(result, text_size)
+
+    # ── Show raw data toggle ──
+    with st.expander("📋 Raw Data (OHLC)"):
+        st.dataframe(df.tail(50).style.format({
+            "Open": "{:.5f}", "High": "{:.5f}",
+            "Low": "{:.5f}", "Close": "{:.5f}"
+        }))
+
+
+if __name__ == "__main__":
+    main()
