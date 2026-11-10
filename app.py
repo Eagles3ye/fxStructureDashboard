@@ -50,7 +50,7 @@ chart_style = st.sidebar.radio(
 )
 
 major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
-lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
+lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 1)
 
 # Color configurations
 BULL_COLOR = "#26a69a"  # Green / Discount / Bullish
@@ -291,82 +291,42 @@ curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 
 
-# --- Dynamic Timeframe CRT & Sweep Calculator ---
-def calculate_crt_for_timeframe(sym, tf_code):
-  temp_df = yf.download(
-      sym, period="2y", interval=tf_code, progress=False, threads=False
-  )
-  if temp_df.empty or len(temp_df) < 2:
-    return "H: N/A | L: N/A", "N/A"
+# --- Dedicated CRT & Sweep Function (Using Lookback Bars) ---
+def compute_crt_and_sweep(data, lb_bars):
+  if len(data) < lb_bars + 1:
+    return "H: N/A | L: N/A", "Sweep: N/A"
 
-  if isinstance(temp_df.columns, pd.MultiIndex):
-    temp_df.columns = temp_df.columns.get_level_values(0)
+  # Extract reference range over the specified lookback bars
+  ref_slice = data.iloc[-(lb_bars + 1) : -1]
+  if ref_slice.empty:
+    ref_slice = data.iloc[-2:-1]
 
-  # Reference previous completed candle for CRT range
-  prev_candle = temp_df.iloc[-2]
-  curr_candle = temp_df.iloc[-1]
+  crt_h = ref_slice["High"].max()
+  crt_l = ref_slice["Low"].min()
 
-  crt_h = prev_candle["High"]
-  crt_l = prev_candle["Low"]
+  curr_bar = data.iloc[-1]
+  curr_h = curr_bar["High"]
+  curr_l = curr_bar["Low"]
 
-  sweep_val = "Neutral"
-  if curr_candle["High"] > crt_h and curr_candle["Low"] < crt_l:
-    sweep_val = "Sweep High & Low"
-  elif curr_candle["High"] > crt_h:
-    sweep_val = "Sweep High"
-  elif curr_candle["Low"] < crt_l:
-    sweep_val = "Sweep Low"
+  swept_high = curr_h > crt_h
+  swept_low = curr_l < crt_l
 
-  return f"H: {crt_h:.4f} | L: {crt_l:.4f}", sweep_val
-
-
-# Map active UI timeframe context to yfinance interval codes
-tf_mapping = {
-    "1M": "1mo",
-    "1W": "1wk",
-    "1D": "1d",
-    "4h": "1h",
-    "1h": "60m",
-    "15m": "15m",
-}
-active_yf_interval = tf_mapping.get(timeframe, "1d")
-
-# If 4h is selected, we fetch hourly and resample; otherwise map directly
-if timeframe == "4h":
-  df_4h_crt = yf.download(
-      ticker, period="60d", interval="60m", progress=False, threads=False
-  )
-  if not df_4h_crt.empty:
-    if isinstance(df_4h_crt.columns, pd.MultiIndex):
-      df_4h_crt.columns = df_4h_crt.columns.get_level_values(0)
-    df_4h_crt = (
-        df_4h_crt.resample("4h")
-        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
-        .dropna()
-    )
-    if len(df_4h_crt) >= 2:
-      prev_c = df_4h_crt.iloc[-2]
-      curr_c = df_4h_crt.iloc[-1]
-      crt_h, crt_l = prev_c["High"], prev_c["Low"]
-      sweep_val = (
-          "Sweep High & Low"
-          if curr_c["High"] > crt_h and curr_c["Low"] < crt_l
-          else "Sweep High"
-          if curr_c["High"] > crt_h
-          else "Sweep Low"
-          if curr_c["Low"] < crt_l
-          else "Neutral"
-      )
-      active_crt_val = f"H: {crt_h:.4f} | L: {crt_l:.4f}"
-      active_sweep_status = sweep_val
-    else:
-      active_crt_val, active_sweep_status = "H: N/A | L: N/A", "N/A"
+  if swept_high and swept_low:
+    sweep_str = "Both (High & Low)"
+  elif swept_high:
+    sweep_str = "High"
+  elif swept_low:
+    sweep_str = "Low"
   else:
-    active_crt_val, active_sweep_status = "H: N/A | L: N/A", "N/A"
-else:
-  active_crt_val, active_sweep_status = calculate_crt_for_timeframe(
-      ticker, active_yf_interval
-  )
+    sweep_str = "Neutral"
+
+  crt_val_str = f"H: {crt_h:.4f} | L: {crt_l:.4f}"
+  sweep_status_str = f"Sweep: {sweep_str}"
+
+  return crt_val_str, sweep_status_str
+
+
+active_crt_val, active_sweep_status = compute_crt_and_sweep(df, lookback)
 
 
 # --- Macro Alignment Context ---
@@ -452,7 +412,7 @@ else:
 st.title("📈 ICT Structure & Liquidity Engine (Live)")
 st.markdown(
     f"**Asset:** `{selected_asset_name}` | **Timeframe:** `{timeframe.upper()}`"
-    " | **Status:** `Live Real-Time Sync Active`"
+    f" | **Lookback Bars:** `{lookback}` | **Status:** `Live Sync Active`"
 )
 
 # Metric Summary Cards
@@ -468,7 +428,7 @@ col3.metric(
     "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A"
 )
 
-# Main Dashboard Table (Showing Timeframe-Specific CRT & Sweep Status)
+# Main Dashboard Table
 st.subheader(f"📊 Engine Dashboard Summary ({timeframe.upper()})")
 dashboard_data = {
     "Metric / Value": [
@@ -477,8 +437,8 @@ dashboard_data = {
         "Dealing Low",
         f"Current Pricing Zone ({timeframe.upper()})",
         f"Last Structure Event ({timeframe.upper()})",
-        f"CRT Value ({timeframe.upper()})",
-        f"CRT Sweep Status ({timeframe.upper()})",
+        f"CRT Value (Lookback: {lookback})",
+        f"CRT Sweep Status",
         "Dynamic Target Objective",
         macro_title,
     ],
