@@ -427,7 +427,7 @@ def main():
     ]
     
     selected_ticker_option = st.sidebar.selectbox("Select Ticker Symbol", predefined_tickers, index=0)
-    ticker = st.sidebar.text_input("Enter Custom Ticker", value="BTC-USD") if selected_ticker_option == "CUSTOM" else selected_ticker_option
+    ticker = st.sidebar.text_input("Enter Custom Ticker", value="GC=F") if selected_ticker_option == "CUSTOM" else selected_ticker_option
 
     col1, col2 = st.sidebar.columns(2)
     with col1:
