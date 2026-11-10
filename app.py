@@ -134,7 +134,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     raw_maj_a, raw_maj_v = detect_pivots(df, major_len)
 
     last_maj_a_val = np.nan
-    last_maj_a_idx = -1          # bar index where pivot was CONFIRMED (i - major_len)
+    last_maj_a_idx = -1
     maj_a_broken = False
     active_dr_high_bar = -1
 
@@ -153,15 +153,15 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
         # ── New pivot confirmed ──
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
-            last_maj_a_idx = i - major_len      # confirm bar (TV offset behavior)
+            last_maj_a_idx = i          # FIX: use actual pivot bar index
             maj_a_broken = False
-            active_dr_high_bar = i - major_len
+            active_dr_high_bar = i
 
         if not np.isnan(raw_maj_v.iloc[i]):
             last_maj_v_val = raw_maj_v.iloc[i]
-            last_maj_v_idx = i - major_len
+            last_maj_v_idx = i
             maj_v_broken = False
-            active_dr_low_bar = i - major_len
+            active_dr_low_bar = i
 
         # ── BOS / Sweep — Major High (A) ──
         if (not np.isnan(last_maj_a_val) and not maj_a_broken
@@ -263,6 +263,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     }
 
 
+
 # ─────────────────────────────────────────────────────────────────
 # PLOT:  Plotly figure
 # ─────────────────────────────────────────────────────────────────
@@ -281,7 +282,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         decreasing_line_color="red",
     ))
 
-    # Major pivot dots (only last 100 bars, like TV)
+    # Major pivot dots (last 100 bars)
     if show_major_dots:
         maj_a = result["raw_maj_a"]
         maj_v = result["raw_maj_v"]
@@ -317,7 +318,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep horizontal lines (from pivot confirm bar to current bar)
+    # BOS / Sweep lines — from pivot confirm bar to breakout bar
     if show_bos_lines:
         for ev in result["events"]:
             x1 = df.index[ev["line_x1"]]
@@ -333,7 +334,6 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 showlegend=False, hoverinfo="skip"
             ))
 
-            # Label at the right end (current bar)
             fig.add_annotation(
                 x=x2, y=y, text=label,
                 showarrow=False,
@@ -347,7 +347,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
     for idx in result.get("sweep_high_flags", {}):
         if idx > 0 and idx < len(df):
             fig.add_trace(go.Scatter(
-                x=[df.index[idx-1], df.index[idx]],
+                x=[df.index[idx - 1], df.index[idx]],
                 y=[df["High"].iloc[idx], df["High"].iloc[idx]],
                 mode="lines",
                 line=dict(color="dimgray", width=1, dash="dash"),
@@ -356,20 +356,33 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
     for idx in result.get("sweep_low_flags", {}):
         if idx > 0 and idx < len(df):
             fig.add_trace(go.Scatter(
-                x=[df.index[idx-1], df.index[idx]],
+                x=[df.index[idx - 1], df.index[idx]],
                 y=[df["Low"].iloc[idx], df["Low"].iloc[idx]],
                 mode="lines",
                 line=dict(color="dimgray", width=1, dash="dash"),
                 showlegend=False, hoverinfo="skip"
             ))
 
-    # Equilibrium line
+    # Equilibrium line — only across the active dealing range
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
-        fig.add_hline(y=eq, line_color="yellow", line_dash="dot",
-                      line_width=2)
+        drh = result["active_dr_high_bar"]
+        drl = result["active_dr_low_bar"]
+
+        if drh >= 0 and drl >= 0:
+            x_start = df.index[min(drh, drl)]
+            x_end = df.index[max(drh, drl)]
+        else:
+            x_start = df.index[0]
+            x_end = df.index[-1]
+
+        fig.add_trace(go.Scatter(
+            x=[x_start, x_end], y=[eq, eq], mode="lines",
+            line=dict(color="yellow", width=2, dash="dot"),
+            name="EQ", showlegend=False
+        ))
         fig.add_annotation(
-            x=df.index[0], y=eq, text=f"EQ: {eq:.5f}",
+            x=x_start, y=eq, text=f"EQ: {eq:.5f}",
             showarrow=False, xanchor="left",
             font=dict(color="yellow", size=10),
         )
@@ -488,23 +501,24 @@ def main():
     st.info(f"Showing {n} bars of {ticker} ({interval}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
     # ── Multi-timeframe data (Fixed with max/5y periods for higher TFs) ──
+    # ── Multi-timeframe data ──
     with st.spinner("Computing multi-timeframe analysis..."):
-        interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
+        interval_map = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
         curr_tf = interval_map.get(interval, "1d")
+
+        tf_period = "2y" if interval in ["1d", "4h", "1h"] else "2y"
 
         tf_results = {}
         for tf_label, tf_interval, tf_len in [
-            ("1M", "1mo", m_len),
-            ("1W", "1wk", w_len),
+            ("1M", "1wk", m_len),          # Monthly
+            ("1W", "1wk", w_len),          # Weekly
             ("1D", "1d", d_len),
             ("240", "4h", h4_len),
             ("60", "1h", h1_len),
             ("15", "15m", m15_len),
         ]:
             try:
-                # Use max history for higher timeframes so pivot lookbacks never return empty/NaN
-                p = "max" if tf_label in ["1M", "1W", "1D"] else ("1y" if interval in ["1d", "4h", "1h"] else "2y")
-                tdf = fetch_ohlc(ticker, period=p, interval=tf_interval)
+                tdf = fetch_ohlc(ticker, period=tf_period, interval=tf_interval)
                 if len(tdf) >= tf_len * 2 + 1:
                     bias, zone, eq = tf_zone_data(tdf, tf_len)
                     tf_results[tf_label] = (bias, zone, eq)
@@ -512,6 +526,7 @@ def main():
                     tf_results[tf_label] = (0, 0, np.nan)
             except Exception:
                 tf_results[tf_label] = (0, 0, np.nan)
+
 
     # ── Macro alignment ──
     m_bias, m_zone, m_eq = tf_results.get("1M", (0, 0, np.nan))
