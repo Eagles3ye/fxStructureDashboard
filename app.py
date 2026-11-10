@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 
 # --- Page Configuration ---
@@ -12,15 +11,9 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- Live Auto-Refresh Setup ---
-refresh_interval = 5000  # 5 seconds live feed polling
-count = st_autorefresh(
-    interval=refresh_interval, limit=None, key="live_data_refresh"
-)
-
 # --- Sidebar Inputs ---
 st.sidebar.header("Engine Settings")
-st.sidebar.markdown(f"🟢 **Live Sync Active** (Refresh count: {count})")
+st.sidebar.markdown("🟢 **Real-Time Stream Active** (1s Tick Engine)")
 
 # Predefined Asset Dictionary
 asset_options = {
@@ -61,7 +54,7 @@ DR_LOW_COLOR = "#42a5f5"  # Blue (Dealing Low)
 
 
 # --- Data Fetching & Multi-Timeframe Resampling ---
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def load_and_resample_data(symbol, tf):
   base_period = "max" if tf in ["1W", "1M"] else "2y"
 
@@ -242,7 +235,6 @@ for i in range(len(df)):
       maj_v_broken = True
       current_event = "BOS Bearish (Body Close)"
       current_target = "Target: Next External Low / FVG"
-      current_structural_trend = "BEARISH"
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -296,9 +288,10 @@ curr_eq = df["EQ"].iloc[-1]
 curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 active_structural_trend = df["StructuralTrend"].iloc[-1]
+latest_price = df["Close"].iloc[-1]
 
 
-# --- Structure-Driven Conditional CRT & Sweep Engine (With Line Plotting) ---
+# --- Structure-Driven Conditional CRT & Sweep Engine ---
 def compute_structural_crt_sweep(data, lb_bars, trend):
   if len(data) < lb_bars + 1:
     return "H: N/A | L: N/A", "Sweep: N/A", None, None
@@ -349,31 +342,49 @@ def compute_structural_crt_sweep(data, lb_bars, trend):
 macro_title = f"Structural Trend Bias ({timeframe.upper()})"
 macro_text = f"Trend: {active_structural_trend} | Zone: {curr_zone.split(' ')[0]}"
 
-# --- Dashboard UI Layout ---
-st.title("📈 ICT Structure & Liquidity Engine (Live)")
+# --- Dashboard UI Layout (Using Streamlit Native Fragment for 1-Second Live Updates) ---
+st.title("📈 ICT Structure & Liquidity Engine (Live 1s)")
 st.markdown(
     f"**Asset:** `{selected_asset_name}` | **Timeframe:** `{timeframe.upper()}`"
     f" | **Lookback:** `{lookback}` | **Structure Trend:**"
     f" `{active_structural_trend}`"
 )
 
-# Metric Summary Cards
-col1, col2, col3 = st.columns(3)
-col1.metric(
-    "Dealing High", f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A"
-)
-col2.metric(
-    "Equilibrium (50% EQ)",
-    f"{curr_eq:.4f}" if not np.isnan(curr_eq) else "N/A",
-)
-col3.metric(
-    "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A"
-)
+
+@st.fragment(run_every=1.0)  # <--- Updates every 1 second without page flicker
+def live_ticker_dashboard():
+  # Fetch latest live tick value
+  live_df = yf.download(
+      ticker, period="1d", interval="1m", progress=False, threads=False
+  )
+  live_price = latest_price
+  if not live_df.empty:
+    if isinstance(live_df.columns, pd.MultiIndex):
+      live_df.columns = live_df.columns.get_level_values(0)
+    live_price = live_df["Close"].iloc[-1]
+
+  # Metric Summary Cards
+  col1, col2, col3, col4 = st.columns(4)
+  col1.metric("Live Price", f"{live_price:.4f}")
+  col2.metric(
+      "Dealing High", f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A"
+  )
+  col3.metric(
+      "Equilibrium (50% EQ)",
+      f"{curr_eq:.4f}" if not np.isnan(curr_eq) else "N/A",
+  )
+  col4.metric(
+      "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A"
+  )
+
+
+live_ticker_dashboard()
 
 # Main Dashboard Table
 st.subheader(f"📊 Engine Dashboard Summary ({timeframe.upper()})")
 dashboard_data = {
     "Metric / Value": [
+        "Live Market Price",
         "Dealing High",
         "Equilibrium (50% EQ)",
         "Dealing Low",
@@ -385,6 +396,7 @@ dashboard_data = {
         macro_title,
     ],
     "Status": [
+        f"{latest_price:.4f}",
         f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A",
         f"{curr_eq:.4f}" if not np.isnan(curr_eq) else "N/A",
         f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A",
@@ -489,6 +501,7 @@ if not np.isnan(curr_dh):
       line_color=DR_HIGH_COLOR,
       annotation_text=f"Dealing High: {curr_dh:.4f}",
   )
+
 if not np.isnan(curr_dl):
   fig.add_hline(
       y=curr_dl,
