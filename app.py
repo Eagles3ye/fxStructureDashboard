@@ -361,12 +361,17 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD
+# BUILD DASHBOARD (FIXED: no font= parameter on st.markdown)
 # ─────────────────────────────────────────────────────────────────
 def render_dashboard(result: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
 
-    st.markdown(f"**ICT STRUCTURE ENGINE**  |  **METRIC / VALUE**", font=fs + 4)
+    # Header row using HTML for size control
+    st.markdown(
+        f"<div style='font-size:{fs+4}px; font-weight:bold; margin-bottom:4px;'>"
+        f"ICT STRUCTURE ENGINE &nbsp;|&nbsp; METRIC / VALUE</div>",
+        unsafe_allow_html=True
+    )
 
     data = [
         ("Dealing High",
@@ -383,12 +388,20 @@ def render_dashboard(result: dict, text_size: str):
     for metric, value in data:
         c1, c2 = st.columns([1, 2])
         with c1:
-            st.markdown(f"`{metric}`", font=fs)
+            st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{metric}</div>",
+                        unsafe_allow_html=True)
         with c2:
-            st.markdown(f"`{value}`", font=fs)
+            st.markdown(f"<div style='font-size:{fs}px; font-family:monospace;'>{value}</div>",
+                        unsafe_allow_html=True)
 
-    st.markdown(f"**{result['macro_title']}**", font=fs + 2)
-    st.markdown(f"`{result['macro_text']}`", font=fs)
+    st.markdown(
+        f"<div style='font-size:{fs+2}px; font-weight:bold; margin-top:8px;'>{result['macro_title']}</div>",
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        f"<div style='font-size:{fs}px; font-family:monospace;'>{result['macro_text']}</div>",
+        unsafe_allow_html=True
+    )
 
 
 # ═════════════════════════════════════════════════════════════════
