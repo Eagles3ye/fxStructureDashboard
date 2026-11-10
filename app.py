@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 
 # --- Page Configuration ---
@@ -14,37 +14,42 @@ st.set_page_config(
 # --- Sidebar Inputs ---
 st.sidebar.header("Engine Settings")
 
-# Predefined Asset Dictionary with TradingView & YFinance compatible symbols
+# Predefined Asset Dictionary
 asset_options = {
-    "USD/CAD": {"tv": "FX:USDCAD", "yf": "USDCAD=X"},
-    "EUR/USD": {"tv": "FX:EURUSD", "yf": "EURUSD=X"},
-    "GBP/USD": {"tv": "FX:GBPUSD", "yf": "GBPUSD=X"},
-    "USD/JPY": {"tv": "FX:USDJPY", "yf": "USDJPY=X"},
-    "Gold (XAU/USD)": {"tv": "OANDA:XAUUSD", "yf": "GC=F"},
-    "Silver (XAG/USD)": {"tv": "OANDA:XAGUSD", "yf": "SI=F"},
-    "Bitcoin (BTC/USD)": {"tv": "BINANCE:BTCUSDT", "yf": "BTC-USD"},
-    "S&P 500 ETF (SPY)": {"tv": "AMEX:SPY", "yf": "SPY"},
+    "USD/CAD": "USDCAD=X",
+    "EUR/USD": "EURUSD=X",
+    "GBP/USD": "GBPUSD=X",
+    "USD/JPY": "USDJPY=X",
+    "Gold (GC=F)": "GC=F",
+    "Silver (SI=F)": "SI=F",
+    "Bitcoin (BTC-USD)": "BTC-USD",
+    "S&P 500 ETF (SPY)": "SPY",
 }
 
 selected_asset_name = st.sidebar.selectbox(
     "Select Asset", list(asset_options.keys()), index=0
 )
-asset_info = asset_options[selected_asset_name]
-ticker = asset_info["yf"]
-tv_symbol = asset_info["tv"]
+ticker = asset_options[selected_asset_name]
 
 # Timeframe Selection
 timeframe = st.sidebar.selectbox(
     "Dashboard Timeframe Context", ["1M", "1W", "1D", "4h", "1h", "15m"], index=2
 )
 
+# Visual Chart Style Toggle
+chart_style = st.sidebar.radio(
+    "Chart Visual Type", ["Candlestick", "Line Chart"], index=0
+)
+
 major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
 lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
 
 # Color configurations
-BULL_COLOR = "#26a69a"  # Green / Discount
-BEAR_COLOR = "#ef5350"  # Red / Premium
+BULL_COLOR = "#26a69a"  # Green / Discount / Bullish
+BEAR_COLOR = "#ef5350"  # Red / Premium / Bearish
 EQ_COLOR = "#ffeb3b"  # Yellow
+DR_HIGH_COLOR = "#ab47bc"  # Purple (Dealing High)
+DR_LOW_COLOR = "#42a5f5"  # Blue (Dealing Low)
 
 
 # --- Data Fetching & Multi-Timeframe Resampling ---
@@ -159,6 +164,7 @@ d_highs = []
 d_lows = []
 eq_list = []
 zones = []
+event_list = []
 
 last_maj_a = np.nan
 last_maj_v = np.nan
@@ -205,7 +211,7 @@ for i in range(len(df)):
 
   eq = (
       (dealing_high + dealing_low) / 2
-      if not (np.isnan(dealing_high) and np.isnan(dealing_low))
+      if not (np.isnan(dealing_high) or np.isnan(dealing_low))
       else np.nan
   )
 
@@ -220,42 +226,74 @@ for i in range(len(df)):
   d_lows.append(dealing_low)
   eq_list.append(eq)
   zones.append(zone)
+  event_list.append(current_event)
 
 df["DealingHigh"] = d_highs
 df["DealingLow"] = d_lows
 df["EQ"] = eq_list
 df["Zone"] = zones
+df["Event"] = event_list
 
 curr_dh = df["DealingHigh"].iloc[-1]
 curr_dl = df["DealingLow"].iloc[-1]
 curr_eq = df["EQ"].iloc[-1]
 curr_zone = df["Zone"].iloc[-1]
+curr_event = df["Event"].iloc[-1]
 
 
-# --- Macro Context ---
-def get_bias_and_zone(sym, interval_rule):
-  temp_df = yf.download(
-      sym, period="1y", interval=interval_rule, progress=False, threads=False
+# --- Macro Alignment Context (Strict Pine Script Matching) ---
+def get_h4_zone_and_daily_bias(sym):
+  # Fetch Daily data for Trend Bias
+  df_d = yf.download(
+      sym, period="1y", interval="1d", progress=False, threads=False
   )
-  if not temp_df.empty:
-    if isinstance(temp_df.columns, pd.MultiIndex):
-      temp_df.columns = temp_df.columns.get_level_values(0)
-    temp_df["EMA50"] = temp_df["Close"].ewm(span=50).mean()
-    bias = (
-        "BULL"
-        if temp_df["Close"].iloc[-1] > temp_df["EMA50"].iloc[-1]
-        else "BEAR"
+  d_bias = "NEUTRAL"
+  if not df_d.empty:
+    if isinstance(df_d.columns, pd.MultiIndex):
+      df_d.columns = df_d.columns.get_level_values(0)
+    df_d["EMA50"] = df_d["Close"].ewm(span=50).mean()
+    d_bias = (
+        "BULL" if df_d["Close"].iloc[-1] > df_d["EMA50"].iloc[-1] else "BEAR"
     )
-    return bias
-  return "NEUTRAL"
+
+  # Fetch H4 data for Zone calculation
+  df_h4 = yf.download(
+      sym, period="60d", interval="240m", progress=False, threads=False
+  )
+  h4_txt = "H4: NA"
+  if not df_h4.empty:
+    if isinstance(df_h4.columns, pd.MultiIndex):
+      df_h4.columns = df_h4.columns.get_level_values(0)
+    # Calculate simple H4 equilibrium using recent high/low
+    h4_high = df_h4["High"].max()
+    h4_low = df_h4["Low"].min()
+    h4_eq = (h4_high + h4_low) / 2
+    h4_close = df_h4["Close"].iloc[-1]
+    zone_str = (
+        "PREM"
+        if h4_close > h4_eq
+        else "DISC" if h4_close < h4_eq else "EQ"
+    )
+    h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
+
+  return d_bias, h4_txt
 
 
-monthly_bias = get_bias_and_zone(ticker, "1mo")
-weekly_bias = get_bias_and_zone(ticker, "1wk")
-daily_bias = get_bias_and_zone(ticker, "1d")
+d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker)
 
-macro_title = f"Macro Alignment ({timeframe.upper()})"
-macro_text = f"M: {monthly_bias} | W: {weekly_bias} | D: {daily_bias}"
+# Conditional Macro Row formatting based on selected timeframe
+if timeframe in ["1D", "D"]:
+  macro_title = "Macro (Daily Trend / H4 Zone)"
+  macro_text = f"D: {d_bias} | {h4_zone_txt}"
+elif timeframe in ["1W", "W"]:
+  macro_title = "Macro (Weekly / Daily Bias)"
+  macro_text = f"W: {d_bias} | D: {d_bias}"
+elif timeframe in ["1M", "M"]:
+  macro_title = "Macro (Monthly / Weekly Bias)"
+  macro_text = f"M: BULL | W: {d_bias}"
+else:
+  macro_title = f"Macro Alignment ({timeframe.upper()})"
+  macro_text = f"Trend Bias: {d_bias} | Zone: {curr_zone.split(' ')[0]}"
 
 # --- Dashboard UI Layout ---
 st.title("📈 ICT Structure & Liquidity Engine")
@@ -294,57 +332,98 @@ dashboard_data = {
         f"{curr_eq:.4f}" if not np.isnan(curr_eq) else "N/A",
         f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A",
         curr_zone,
-        current_event,
+        curr_event,
         current_target,
         macro_text,
     ],
 }
 st.table(pd.DataFrame(dashboard_data))
 
-# --- Native Embedded TradingView Advanced Chart Widget ---
+# --- Interactive Plotly Chart with Visual Overlays (Dots & Lines) ---
 st.subheader(
-    f"🕯️ Live TradingView Chart ({selected_asset_name} - {timeframe.upper()})"
+    f"🕯️ Structure & Liquidity Chart ({selected_asset_name} -"
+    f" {timeframe.upper()})"
 )
 
-# Map our timeframe selection to TradingView interval format
-tv_interval_map = {
-    "1M": "M",
-    "1W": "W",
-    "1D": "D",
-    "4h": "240",
-    "1h": "60",
-    "15m": "15",
-}
-tv_interval = tv_interval_map.get(timeframe, "D")
+fig = go.Figure()
 
-# HTML/JS widget container for TradingView Advanced Real-Time Chart
-tv_widget_html = f"""
-<div class="tradingview-widget-container" style="height:600px;width:100%">
-  <div id="tradingview_widget" style="height:100%;width:100%"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script type="text/javascript">
-  new TradingView.widget(
-  {{
-    "autosize": true,
-    "symbol": "{tv_symbol}",
-    "interval": "{tv_interval}",
-    "timezone": "Etc/UTC",
-    "theme": "dark",
-    "style": "1",
-    "locale": "en",
-    "toolbar_bg": "#f1f3f6",
-    "enable_publishing": false,
-    "hide_side_toolbar": false,
-    "allow_symbol_change": true,
-    "details": true,
-    "hotlist": true,
-    "calendar": true,
-    "container_id": "tradingview_widget"
-  }}
-  );
-  </script>
-</div>
-"""
+# 1. Main Price Series (Candlestick or Line)
+if chart_style == "Candlestick":
+  fig.add_trace(
+      go.Candlestick(
+          x=df.index,
+          open=df["Open"],
+          high=df["High"],
+          low=df["Low"],
+          close=df["Close"],
+          name="Price",
+      )
+  )
+else:
+  fig.add_trace(
+      go.Scatter(
+          x=df.index,
+          y=df["Close"],
+          mode="lines",
+          name="Close Price",
+          line=dict(color="#29b6f6", width=2),
+      )
+  )
 
-# Render the interactive TradingView widget inside Streamlit
-components.html(tv_widget_html, height=620)
+# 2. Plot Major Pivot Dots on Chart (Matching your Pine script circles)
+fig.add_trace(
+    go.Scatter(
+        x=df.index[df["PivotHigh"].notna()],
+        y=df["PivotHigh"].dropna(),
+        mode="markers",
+        name="Major Pivot High (A)",
+        marker=dict(size=10, color=BEAR_COLOR, symbol="circle"),
+    )
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=df.index[df["PivotLow"].notna()],
+        y=df["PivotLow"].dropna(),
+        mode="markers",
+        name="Major Pivot Low (V)",
+        marker=dict(size=10, color=BULL_COLOR, symbol="circle"),
+    )
+)
+
+# 3. Plot Equilibrium (EQ) Line
+if not np.isnan(curr_eq):
+  fig.add_hline(
+      y=curr_eq,
+      line_dash="dot",
+      line_color=EQ_COLOR,
+      annotation_text=f"50% EQ: {curr_eq:.4f}",
+      annotation_position="bottom right",
+  )
+
+# 4. Plot Active Dealing Range High & Low boundary lines
+if not np.isnan(curr_dh):
+  fig.add_hline(
+      y=curr_dh,
+      line_dash="dash",
+      line_color=DR_HIGH_COLOR,
+      annotation_text=f"Dealing High: {curr_dh:.4f}",
+  )
+if not np.isnan(curr_dl):
+  fig.add_hline(
+      y=curr_dl,
+      line_dash="dash",
+      line_color=DR_LOW_COLOR,
+      annotation_text=f"Dealing Low: {curr_dl:.4f}",
+  )
+
+fig.update_layout(
+    template="plotly_dark",
+    xaxis_title="Time",
+    yaxis_title="Price",
+    height=650,
+    xaxis_rangeslider_visible=False,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+)
+
+st.plotly_chart(fig, use_container_width=True)
