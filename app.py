@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 # --- Page Configuration ---
@@ -14,36 +14,28 @@ st.set_page_config(
 # --- Sidebar Inputs ---
 st.sidebar.header("Engine Settings")
 
-# Predefined Asset Dictionary (Display Name -> Yahoo Finance Ticker)
+# Predefined Asset Dictionary with TradingView & YFinance compatible symbols
 asset_options = {
-    "USD/CAD (US Dollar / Canadian Dollar)": "USDCAD=X",
-    "EUR/USD (Euro / US Dollar)": "EURUSD=X",
-    "GBP/USD (British Pound / US Dollar)": "GBPUSD=X",
-    "USD/JPY (US Dollar / Japanese Yen)": "USDJPY=X",
-    "AUD/USD (Australian Dollar / US Dollar)": "AUDUSD=X",
-    "EUR/GBP (Euro / British Pound)": "EURGBP=X",
-    "Gold (XAU/USD)": "GC=X",
-    "Silver (XAG/USD)": "SI=X",
-    "Bitcoin (BTC/USD)": "BTC-USD",
-    "Ethereum (ETH/USD)": "ETH-USD",
-    "S&P 500 ETF (SPY)": "SPY",
-    "Nasdaq ETF (QQQ)": "QQQ",
+    "USD/CAD": {"tv": "FX:USDCAD", "yf": "USDCAD=X"},
+    "EUR/USD": {"tv": "FX:EURUSD", "yf": "EURUSD=X"},
+    "GBP/USD": {"tv": "FX:GBPUSD", "yf": "GBPUSD=X"},
+    "USD/JPY": {"tv": "FX:USDJPY", "yf": "USDJPY=X"},
+    "Gold (XAU/USD)": {"tv": "OANDA:XAUUSD", "yf": "GC=F"},
+    "Silver (XAG/USD)": {"tv": "OANDA:XAGUSD", "yf": "SI=F"},
+    "Bitcoin (BTC/USD)": {"tv": "BINANCE:BTCUSDT", "yf": "BTC-USD"},
+    "S&P 500 ETF (SPY)": {"tv": "AMEX:SPY", "yf": "SPY"},
 }
 
-# Dropdown selection for mobile convenience
 selected_asset_name = st.sidebar.selectbox(
     "Select Asset", list(asset_options.keys()), index=0
 )
-ticker = asset_options[selected_asset_name]
+asset_info = asset_options[selected_asset_name]
+ticker = asset_info["yf"]
+tv_symbol = asset_info["tv"]
 
 # Timeframe Selection
 timeframe = st.sidebar.selectbox(
-    "Chart Timeframe", ["1M", "1W", "1D", "4h", "1h", "15m"], index=2
-)
-
-# Visual Chart Style Toggle
-chart_style = st.sidebar.radio(
-    "Chart Visual Type", ["Candlestick", "Line Chart"], index=0
+    "Dashboard Timeframe Context", ["1M", "1W", "1D", "4h", "1h", "15m"], index=2
 )
 
 major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
@@ -53,8 +45,6 @@ lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
 BULL_COLOR = "#26a69a"  # Green / Discount
 BEAR_COLOR = "#ef5350"  # Red / Premium
 EQ_COLOR = "#ffeb3b"  # Yellow
-DR_HIGH_COLOR = "#ab47bc"  # Purple
-DR_LOW_COLOR = "#42a5f5"  # Blue
 
 
 # --- Data Fetching & Multi-Timeframe Resampling ---
@@ -122,7 +112,8 @@ df = load_and_resample_data(ticker, timeframe)
 
 if df.empty:
   st.error(
-      f"Could not retrieve data for {ticker}. Please check the ticker symbol."
+      f"Could not retrieve data for {selected_asset_name}. Please check the"
+      " ticker configuration."
   )
   st.stop()
 
@@ -160,7 +151,7 @@ def compute_pivots(data, length):
 
 df = compute_pivots(df, major_len)
 
-# --- State Tracking, Dealing Range & Structure Event Logic ---
+# --- Dealing Range & Structure Event Logic ---
 dealing_high = np.nan
 dealing_low = np.nan
 
@@ -214,7 +205,7 @@ for i in range(len(df)):
 
   eq = (
       (dealing_high + dealing_low) / 2
-      if not (np.isnan(dealing_high) or np.isnan(dealing_low))
+      if not (np.isnan(dealing_high) and np.isnan(dealing_low))
       else np.nan
   )
 
@@ -310,65 +301,50 @@ dashboard_data = {
 }
 st.table(pd.DataFrame(dashboard_data))
 
-# --- Interactive Plotly Chart ---
+# --- Native Embedded TradingView Advanced Chart Widget ---
 st.subheader(
-    f"🕯️ Price Chart ({selected_asset_name} - {timeframe.upper()} -"
-    f" {chart_style})"
+    f"🕯️ Live TradingView Chart ({selected_asset_name} - {timeframe.upper()})"
 )
 
-fig = go.Figure()
+# Map our timeframe selection to TradingView interval format
+tv_interval_map = {
+    "1M": "M",
+    "1W": "W",
+    "1D": "D",
+    "4h": "240",
+    "1h": "60",
+    "15m": "15",
+}
+tv_interval = tv_interval_map.get(timeframe, "D")
 
-if chart_style == "Candlestick":
-  fig.add_trace(
-      go.Candlestick(
-          x=df.index,
-          open=df["Open"],
-          high=df["High"],
-          low=df["Low"],
-          close=df["Close"],
-          name="Price",
-      )
-  )
-else:
-  fig.add_trace(
-      go.Scatter(
-          x=df.index,
-          y=df["Close"],
-          mode="lines",
-          name="Close Price",
-          line=dict(color="#29b6f6", width=2),
-      )
-  )
+# HTML/JS widget container for TradingView Advanced Real-Time Chart
+tv_widget_html = f"""
+<div class="tradingview-widget-container" style="height:600px;width:100%">
+  <div id="tradingview_widget" style="height:100%;width:100%"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget(
+  {{
+    "autosize": true,
+    "symbol": "{tv_symbol}",
+    "interval": "{tv_interval}",
+    "timezone": "Etc/UTC",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#f1f3f6",
+    "enable_publishing": false,
+    "hide_side_toolbar": false,
+    "allow_symbol_change": true,
+    "details": true,
+    "hotlist": true,
+    "calendar": true,
+    "container_id": "tradingview_widget"
+  }}
+  );
+  </script>
+</div>
+"""
 
-if not np.isnan(curr_eq):
-  fig.add_hline(
-      y=curr_eq,
-      line_dash="dot",
-      line_color=EQ_COLOR,
-      annotation_text=f"50% EQ ({timeframe.upper()})",
-      annotation_position="bottom right",
-  )
-if not np.isnan(curr_dh):
-  fig.add_hline(
-      y=curr_dh,
-      line_dash="dash",
-      line_color=BEAR_COLOR,
-      annotation_text="Dealing High",
-  )
-if not np.isnan(curr_dl):
-  fig.add_hline(
-      y=curr_dl,
-      line_dash="dash",
-      line_color=BULL_COLOR,
-      annotation_text="Dealing Low",
-  )
-
-fig.update_layout(
-    template="plotly_dark",
-    xaxis_title="Time",
-    yaxis_title="Price",
-    height=600,
-    xaxis_rangeslider_visible=False,
-)
-
-st.plotly_chart(fig, use_container_width=True)
+# Render the interactive TradingView widget inside Streamlit
+components.html(tv_widget_html, height=620)
