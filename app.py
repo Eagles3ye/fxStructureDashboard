@@ -20,7 +20,7 @@ import time
 # HELPER: Fetch OHLC from yfinance
 # ─────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def fetch_ohlc(ticker: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
+def fetch_ohlc(ticker: str, period: str = "1y", interval: str = "1M") -> pd.DataFrame:
     """Fetch historical OHLC data from Yahoo Finance."""
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
