@@ -164,7 +164,7 @@ def compute_pivots(data, length):
 
 df = compute_pivots(df, major_len)
 
-# --- Dealing Range, Structure & Line Event Logic ---
+# --- Dealing Range, Structure & Structural Trend Engine ---
 dealing_high = np.nan
 dealing_low = np.nan
 
@@ -173,6 +173,7 @@ d_lows = []
 eq_list = []
 zones = []
 event_list = []
+trend_list = []
 
 chart_lines = []
 
@@ -186,6 +187,7 @@ maj_v_broken = False
 
 current_event = "Initializing Structure..."
 current_target = "Waiting for Event..."
+current_structural_trend = "BULLISH"
 
 for i in range(len(df)):
   ph = df["PivotHigh"].iloc[i]
@@ -213,6 +215,7 @@ for i in range(len(df)):
       maj_a_broken = True
       current_event = "BOS Bullish (Body Close)"
       current_target = "Target: Next External High / FVG"
+      current_structural_trend = "BULLISH"
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -239,6 +242,7 @@ for i in range(len(df)):
       maj_v_broken = True
       current_event = "BOS Bearish (Body Close)"
       current_target = "Target: Next External Low / FVG"
+      current_structural_trend = "BEARISH"
       chart_lines.append({
           "x0": start_time,
           "x1": curr_time,
@@ -277,26 +281,28 @@ for i in range(len(df)):
   eq_list.append(eq)
   zones.append(zone)
   event_list.append(current_event)
+  trend_list.append(current_structural_trend)
 
 df["DealingHigh"] = d_highs
 df["DealingLow"] = d_lows
 df["EQ"] = eq_list
 df["Zone"] = zones
 df["Event"] = event_list
+df["StructuralTrend"] = trend_list
 
 curr_dh = df["DealingHigh"].iloc[-1]
 curr_dl = df["DealingLow"].iloc[-1]
 curr_eq = df["EQ"].iloc[-1]
 curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
+active_structural_trend = df["StructuralTrend"].iloc[-1]
 
 
-# --- Dedicated CRT & Sweep Function (Using Lookback Bars) ---
-def compute_crt_and_sweep(data, lb_bars):
+# --- Structure-Driven Conditional CRT & Sweep Engine ---
+def compute_structural_crt_sweep(data, lb_bars, trend):
   if len(data) < lb_bars + 1:
     return "H: N/A | L: N/A", "Sweep: N/A"
 
-  # Extract reference range over the specified lookback bars
   ref_slice = data.iloc[-(lb_bars + 1) : -1]
   if ref_slice.empty:
     ref_slice = data.iloc[-2:-1]
@@ -308,17 +314,17 @@ def compute_crt_and_sweep(data, lb_bars):
   curr_h = curr_bar["High"]
   curr_l = curr_bar["Low"]
 
-  swept_high = curr_h > crt_h
-  swept_low = curr_l < crt_l
-
-  if swept_high and swept_low:
-    sweep_str = "Both (High & Low)"
-  elif swept_high:
-    sweep_str = "High"
-  elif swept_low:
-    sweep_str = "Low"
+  # Structure-driven conditional sweep:
+  # Bullish Structure Trend -> Check for Low Sweep
+  # Bearish Structure Trend -> Check for High Sweep
+  if trend == "BULLISH":
+    swept = curr_l < crt_l
+    sweep_str = "Low Swept (Bullish Setup)" if swept else "Waiting for Low Sweep"
   else:
-    sweep_str = "Neutral"
+    swept = curr_h > crt_h
+    sweep_str = (
+        "High Swept (Bearish Setup)" if swept else "Waiting for High Sweep"
+    )
 
   crt_val_str = f"H: {crt_h:.4f} | L: {crt_l:.4f}"
   sweep_status_str = f"Sweep: {sweep_str}"
@@ -326,93 +332,20 @@ def compute_crt_and_sweep(data, lb_bars):
   return crt_val_str, sweep_status_str
 
 
-active_crt_val, active_sweep_status = compute_crt_and_sweep(df, lookback)
+active_crt_val, active_sweep_status = compute_structural_crt_sweep(
+    df, lookback, active_structural_trend
+)
 
-
-# --- Macro Alignment Context ---
-def get_h4_zone_and_daily_bias(sym, length=3):
-  df_d = yf.download(
-      sym, period="1y", interval="1d", progress=False, threads=False
-  )
-  d_bias = "NEUTRAL"
-  if not df_d.empty:
-    if isinstance(df_d.columns, pd.MultiIndex):
-      df_d.columns = df_d.columns.get_level_values(0)
-    df_d["EMA50"] = df_d["Close"].ewm(span=50).mean()
-    d_bias = (
-        "BULL" if df_d["Close"].iloc[-1] > df_d["EMA50"].iloc[-1] else "BEAR"
-    )
-
-  df_h4 = yf.download(
-      sym, period="59d", interval="60m", progress=False, threads=False
-  )
-  h4_txt = "H4: NA"
-  if not df_h4.empty:
-    if isinstance(df_h4.columns, pd.MultiIndex):
-      df_h4.columns = df_h4.columns.get_level_values(0)
-    df_h4 = (
-        df_h4.resample("4h")
-        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
-        .dropna()
-    )
-
-    if len(df_h4) > length * 2:
-      highs = df_h4["High"].values
-      lows = df_h4["Low"].values
-      n = len(df_h4)
-      active_hi = np.nan
-      active_lo = np.nan
-
-      for i in range(length, n - length):
-        is_hi = True
-        for j in range(1, length + 1):
-          if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
-            is_hi = False
-            break
-        if is_hi:
-          active_hi = highs[i]
-
-        is_lo = True
-        for j in range(1, length + 1):
-          if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
-            is_lo = False
-            break
-        if is_lo:
-          active_lo = lows[i]
-
-      if not np.isnan(active_hi) and not np.isnan(active_lo):
-        h4_eq = (active_hi + active_lo) / 2
-        h4_close = df_h4["Close"].iloc[-1]
-        zone_str = (
-            "PREM"
-            if h4_close > h4_eq
-            else "DISC" if h4_close < h4_eq else "EQ"
-        )
-        h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
-
-  return d_bias, h4_txt
-
-
-d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker, major_len)
-
-if timeframe in ["1D", "D"]:
-  macro_title = "Macro (Daily Trend / H4 Zone)"
-  macro_text = f"D: {d_bias} | {h4_zone_txt}"
-elif timeframe in ["1W", "W"]:
-  macro_title = "Macro (Weekly / Daily Bias)"
-  macro_text = f"W: {active_sweep_status} | D: {d_bias}"
-elif timeframe in ["1M", "M"]:
-  macro_title = "Macro (Monthly / Weekly Bias)"
-  macro_text = f"M: {active_sweep_status} | W: {d_bias}"
-else:
-  macro_title = f"Macro Alignment ({timeframe.upper()})"
-  macro_text = f"Trend Bias: {d_bias} | Zone: {curr_zone.split(' ')[0]}"
+# --- Macro Alignment Context (Structure-Based) ---
+macro_title = f"Structural Trend Bias ({timeframe.upper()})"
+macro_text = f"Trend: {active_structural_trend} | Zone: {curr_zone.split(' ')[0]}"
 
 # --- Dashboard UI Layout ---
 st.title("📈 ICT Structure & Liquidity Engine (Live)")
 st.markdown(
     f"**Asset:** `{selected_asset_name}` | **Timeframe:** `{timeframe.upper()}`"
-    f" | **Lookback Bars:** `{lookback}` | **Status:** `Live Sync Active`"
+    f" | **Lookback:** `{lookback}` | **Structure Trend:**"
+    f" `{active_structural_trend}`"
 )
 
 # Metric Summary Cards
@@ -438,7 +371,7 @@ dashboard_data = {
         f"Current Pricing Zone ({timeframe.upper()})",
         f"Last Structure Event ({timeframe.upper()})",
         f"CRT Value (Lookback: {lookback})",
-        f"CRT Sweep Status",
+        f"Conditional Sweep ({active_structural_trend} Trend Filter)",
         "Dynamic Target Objective",
         macro_title,
     ],
@@ -541,7 +474,7 @@ if not np.isnan(curr_dl):
   fig.add_hline(
       y=curr_dl,
       line_dash="dash",
-      line_color=DR_LOW_COLOR,
+      line_color=BULL_COLOR,
       annotation_text=f"Dealing Low: {curr_dl:.4f}",
   )
 
