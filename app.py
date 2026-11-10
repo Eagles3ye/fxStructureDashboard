@@ -55,9 +55,6 @@ def tf_zone_data(df: pd.DataFrame, length: int):
     """
     Equivalent of Pine Script f_tf_data_zone().
     Returns (bias, zone, eq) for the latest bar.
-      bias:  1 = bullish, -1 = bearish, 0 = neutral
-      zone:  1 = premium, -1 = discount, 0 = no eq
-      eq:    float or NaN
     """
     if len(df) < length * 2 + 1:
         return 0, 0, np.nan
@@ -361,7 +358,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD (FIXED: no font= parameter on st.markdown)
+# BUILD DASHBOARD — NO font= PARAMETER ANYWHERE
 # ─────────────────────────────────────────────────────────────────
 def render_dashboard(result: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
