@@ -16,12 +16,12 @@ st.sidebar.header("Engine Settings")
 
 # Predefined Asset Dictionary
 asset_options = {
+    "Gold (GC=F)": "GC=F",
+    "Silver (SI=F)": "SI=F",
     "USD/CAD": "USDCAD=X",
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
     "USD/JPY": "USDJPY=X",
-    "Gold (GC=F)": "GC=F",
-    "Silver (SI=F)": "SI=F",
     "Bitcoin (BTC-USD)": "BTC-USD",
     "S&P 500 ETF (SPY)": "SPY",
 }
@@ -33,7 +33,7 @@ ticker = asset_options[selected_asset_name]
 
 # Timeframe Selection
 timeframe = st.sidebar.selectbox(
-    "Dashboard Timeframe Context", ["1M", "1W", "1D", "4h", "1h", "15m"], index=2
+    "Dashboard Timeframe Context", ["1M", "1W", "1D", "4h", "1h", "15m"], index=3
 )
 
 # Visual Chart Style Toggle
@@ -42,7 +42,9 @@ chart_style = st.sidebar.radio(
 )
 
 major_len = st.sidebar.slider("Major Swing Length", 2, 10, 3)
-lookback = st.sidebar.slider("Sweep Lookback Bars", 1, 20, 5)
+
+# Fixed Sweep Lookback to 1 as requested
+LOOKBACK = 1
 
 # Color configurations
 BULL_COLOR = "#26a69a"  # Green / Discount / Bullish
@@ -156,7 +158,7 @@ def compute_pivots(data, length):
 
 df = compute_pivots(df, major_len)
 
-# --- Dealing Range, Structure & Line Event Logic ---
+# --- Dealing Range, Structure & Sweep Logic (Lookback = 1) ---
 dealing_high = np.nan
 dealing_low = np.nan
 
@@ -165,6 +167,7 @@ d_lows = []
 eq_list = []
 zones = []
 event_list = []
+sweep_signals = []
 
 chart_lines = []
 
@@ -199,6 +202,37 @@ for i in range(len(df)):
     dealing_low = pl
     maj_v_broken = False
 
+  is_sweep_high = False
+  is_sweep_low = False
+  if i >= LOOKBACK:
+    prev_high = df["High"].iloc[i - LOOKBACK]
+    prev_low = df["Low"].iloc[i - LOOKBACK]
+    is_sweep_high = (high_val > prev_high) and (close_val < prev_high)
+    is_sweep_low = (low_val < prev_low) and (close_val > prev_low)
+
+  if is_sweep_high:
+    current_event = "LIQUIDITY SWEEP HIGH (Wick)"
+    current_target = "Target: EQ (50%) -> Range Low"
+    chart_lines.append({
+        "x0": df.index[i - LOOKBACK],
+        "x1": curr_time,
+        "y": df["High"].iloc[i - LOOKBACK],
+        "color": BEAR_COLOR,
+        "width": 1,
+        "dash": "dot",
+    })
+  elif is_sweep_low:
+    current_event = "LIQUIDITY SWEEP LOW (Wick)"
+    current_target = "Target: EQ (50%) -> Range High"
+    chart_lines.append({
+        "x0": df.index[i - LOOKBACK],
+        "x1": curr_time,
+        "y": df["Low"].iloc[i - LOOKBACK],
+        "color": BULL_COLOR,
+        "width": 1,
+        "dash": "dot",
+    })
+
   if not np.isnan(last_maj_a) and not maj_a_broken and high_val > last_maj_a:
     start_time = df.index[last_maj_a_idx]
     if close_val > last_maj_a:
@@ -212,17 +246,6 @@ for i in range(len(df)):
           "color": BULL_COLOR,
           "width": 2,
           "dash": "solid",
-      })
-    else:
-      current_event = "LIQUIDITY SWEEP HIGH (Wick)"
-      current_target = "Target: EQ (50%) -> Range Low"
-      chart_lines.append({
-          "x0": start_time,
-          "x1": curr_time,
-          "y": last_maj_a,
-          "color": BEAR_COLOR,
-          "width": 1,
-          "dash": "dot",
       })
 
   if not np.isnan(last_maj_v) and not maj_v_broken and low_val < last_maj_v:
@@ -238,17 +261,6 @@ for i in range(len(df)):
           "color": BEAR_COLOR,
           "width": 2,
           "dash": "solid",
-      })
-    else:
-      current_event = "LIQUIDITY SWEEP LOW (Wick)"
-      current_target = "Target: EQ (50%) -> Range High"
-      chart_lines.append({
-          "x0": start_time,
-          "x1": curr_time,
-          "y": last_maj_v,
-          "color": BULL_COLOR,
-          "width": 1,
-          "dash": "dot",
       })
 
   eq = (
@@ -269,12 +281,18 @@ for i in range(len(df)):
   eq_list.append(eq)
   zones.append(zone)
   event_list.append(current_event)
+  sweep_signals.append(
+      "HIGH SWEEP"
+      if is_sweep_high
+      else ("LOW SWEEP" if is_sweep_low else "NONE")
+  )
 
 df["DealingHigh"] = d_highs
 df["DealingLow"] = d_lows
 df["EQ"] = eq_list
 df["Zone"] = zones
 df["Event"] = event_list
+df["SweepSignal"] = sweep_signals
 
 curr_dh = df["DealingHigh"].iloc[-1]
 curr_dl = df["DealingLow"].iloc[-1]
@@ -283,109 +301,113 @@ curr_zone = df["Zone"].iloc[-1]
 curr_event = df["Event"].iloc[-1]
 
 
-# --- Macro Alignment Context (Fixed with Active Pivot-Based H4 Dealing Range) ---
-def get_h4_zone_and_daily_bias(sym, length=3):
-  df_d = yf.download(
-      sym, period="1y", interval="1d", progress=False, threads=False
-  )
-  d_bias = "NEUTRAL"
-  if not df_d.empty:
-    if isinstance(df_d.columns, pd.MultiIndex):
-      df_d.columns = df_d.columns.get_level_values(0)
-    df_d["EMA50"] = df_d["Close"].ewm(span=50).mean()
-    d_bias = (
-        "BULL" if df_d["Close"].iloc[-1] > df_d["EMA50"].iloc[-1] else "BEAR"
-    )
-
+# --- Dedicated H4 Setup Scanner ---
+@st.cache_data(ttl=60)
+def scan_h4_setup(sym, length=3):
   df_h4 = yf.download(
       sym, period="59d", interval="60m", progress=False, threads=False
   )
-  h4_txt = "H4: NA"
-  if not df_h4.empty:
-    if isinstance(df_h4.columns, pd.MultiIndex):
-      df_h4.columns = df_h4.columns.get_level_values(0)
-    df_h4 = (
-        df_h4.resample("4h")
-        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
-        .dropna()
-    )
+  if df_h4.empty:
+    return "NO DATA", "N/A", "N/A", "N/A"
 
-    if len(df_h4) > length * 2:
-      highs = df_h4["High"].values
-      lows = df_h4["Low"].values
-      closes = df_h4["Close"].values
-      n = len(df_h4)
+  if isinstance(df_h4.columns, pd.MultiIndex):
+    df_h4.columns = df_h4.columns.get_level_values(0)
 
-      active_hi = np.nan
-      active_lo = np.nan
+  df_h4 = (
+      df_h4.resample("4h")
+      .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+      .dropna()
+  )
+  if len(df_h4) < length * 2:
+    return "INSUFFICIENT DATA", "N/A", "N/A", "N/A"
 
-      # Simulate rolling pivot state tracker for H4 dealing range
-      for i in range(length, n - length):
-        is_hi = True
-        for j in range(1, length + 1):
-          if highs[i] <= highs[i - j] or highs[i] <= highs[i + j]:
-            is_hi = False
-            break
-        if is_hi:
-          active_hi = highs[i]
+  df_h4["EMA50"] = df_h4["Close"].ewm(span=50).mean()
+  h4_trend = (
+      "BEARISH"
+      if df_h4["Close"].iloc[-1] < df_h4["EMA50"].iloc[-1]
+      else "BULLISH"
+  )
 
-        is_lo = True
-        for j in range(1, length + 1):
-          if lows[i] >= lows[i - j] or lows[i] >= lows[i + j]:
-            is_lo = False
-            break
-        if is_lo:
-          active_lo = lows[i]
+  highs = df_h4["High"].values
+  lows = df_h4["Low"].values
+  closes = df_h4["Close"].values
+  n = len(df_h4)
 
-      if not np.isnan(active_hi) and not np.isnan(active_lo):
-        h4_eq = (active_hi + active_lo) / 2
-        h4_close = closes[-1]
-        zone_str = (
-            "PREM"
-            if h4_close > h4_eq
-            else "DISC" if h4_close < h4_eq else "EQ"
-        )
-        h4_txt = f"H4: {h4_eq:.4f} ({zone_str})"
+  active_hi, active_lo = np.nan, np.nan
+  for i in range(length, n - length):
+    if all(highs[i] > highs[i - j] for j in range(1, length + 1)) and all(
+        highs[i] >= highs[i + j] for j in range(1, length + 1)
+    ):
+      active_hi = highs[i]
+    if all(lows[i] < lows[i - j] for j in range(1, length + 1)) and all(
+        lows[i] <= lows[i + j] for j in range(1, length + 1)
+    ):
+      active_lo = lows[i]
 
-  return d_bias, h4_txt
+  if np.isnan(active_hi) or np.isnan(active_lo):
+    active_hi, active_lo = highs.max(), lows.min()
+
+  h4_eq = (active_hi + active_lo) / 2
+  h4_close = closes[-1]
+  h4_zone = "PREMIUM" if h4_close > h4_eq else "DISCOUNT"
+
+  prev_h = highs[-2]
+  prev_l = lows[-2]
+  curr_h = highs[-1]
+  curr_l = lows[-1]
+  curr_c = closes[-1]
+
+  h4_sweep_high = (curr_h > prev_h) and (curr_c < prev_h)
+  h4_sweep_low = (curr_l < prev_l) and (curr_c > prev_l)
+
+  sweep_status = (
+      "HIGH SWEEP"
+      if h4_sweep_high
+      else ("LOW SWEEP" if h4_sweep_low else "NO SWEEP")
+  )
+
+  return h4_trend, h4_zone, h4_eq, sweep_status
 
 
-d_bias, h4_zone_txt = get_h4_zone_and_daily_bias(ticker, major_len)
-
-if timeframe in ["1D", "D"]:
-  macro_title = "Macro (Daily Trend / H4 Zone)"
-  macro_text = f"D: {d_bias} | {h4_zone_txt}"
-elif timeframe in ["1W", "W"]:
-  macro_title = "Macro (Weekly / Daily Bias)"
-  macro_text = f"W: {d_bias} | D: {d_bias}"
-elif timeframe in ["1M", "M"]:
-  macro_title = "Macro (Monthly / Weekly Bias)"
-  macro_text = f"M: BULL | W: {d_bias}"
-else:
-  macro_title = f"Macro Alignment ({timeframe.upper()})"
-  macro_text = f"Trend Bias: {d_bias} | Zone: {curr_zone.split(' ')[0]}"
+h4_trend, h4_zone, h4_eq_val, h4_sweep = scan_h4_setup(ticker, major_len)
 
 # --- Dashboard UI Layout ---
 st.title("📈 ICT Structure & Liquidity Engine")
 st.markdown(
-    f"**Asset:** `{selected_asset_name}` | **Timeframe:** `{timeframe.upper()}`"
-    " | **Engine Status:** `Active`"
+    f"**Asset:** `{selected_asset_name}` | **Timeframe Context:**"
+    f" `{timeframe.upper()}`"
 )
 
-# Metric Summary Cards
-col1, col2, col3 = st.columns(3)
-col1.metric(
-    "Dealing High", f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A"
-)
-col2.metric(
-    "Equilibrium (50% EQ)",
-    f"{curr_eq:.4f}" if not np.isnan(curr_eq) else "N/A",
-)
-col3.metric(
-    "Dealing Low", f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A"
-)
+# --- 🔥 Dual CRT & Setup Scanner Banner ---
+st.subheader("🚨 H4 CRT & Setup Scanner (Lookback = 1)")
 
-# Main Dashboard Table
+col_a, col_b, col_c = st.columns(3)
+col_a.metric("H4 Trend Bias", h4_trend)
+col_b.metric("H4 Pricing Zone", h4_zone)
+col_c.metric("H4 Sweep Status (LB=1)", h4_sweep)
+
+if h4_trend == "BULLISH" and h4_zone == "DISCOUNT" and h4_sweep == "LOW SWEEP":
+  st.success(
+      "🔥 **BULLISH CRT SETUP ACTIVE ON H4!** Trend is Bullish | Price is in"
+      " Discount | Low Sweep (LB=1) confirmed. Setup primed for Long targets!"
+  )
+elif h4_trend == "BEARISH" and h4_zone == "PREMIUM" and h4_sweep == "HIGH SWEEP":
+  st.success(
+      "🔥 **BEARISH CRT SETUP ACTIVE ON H4!** Trend is Bearish | Price is in"
+      " Premium | High Sweep (LB=1) confirmed. Setup primed for Short targets!"
+  )
+elif h4_sweep != "NO SWEEP":
+  st.warning(
+      f"⚠️ **{h4_sweep} detected in {h4_zone} zone**, but the H4 trend"
+      f" ({h4_trend}) does not fully align for a clean CRT entry yet."
+  )
+else:
+  st.info(
+      "ℹ️ Waiting for alignment: (Bullish + Discount + Low Sweep) OR (Bearish +"
+      " Premium + High Sweep)."
+  )
+
+# --- Main Dashboard Table ---
 st.subheader(f"📊 Engine Dashboard Summary ({timeframe.upper()})")
 dashboard_data = {
     "Metric / Value": [
@@ -394,8 +416,7 @@ dashboard_data = {
         "Dealing Low",
         f"Current Pricing Zone ({timeframe.upper()})",
         f"Last Structure Event ({timeframe.upper()})",
-        "Dynamic Target Objective",
-        macro_title,
+        "H4 Scan Status (Lookback=1)",
     ],
     "Status": [
         f"{curr_dh:.4f}" if not np.isnan(curr_dh) else "N/A",
@@ -403,8 +424,7 @@ dashboard_data = {
         f"{curr_dl:.4f}" if not np.isnan(curr_dl) else "N/A",
         curr_zone,
         curr_event,
-        current_target,
-        macro_text,
+        f"Trend: {h4_trend} | Zone: {h4_zone} | Sweep: {h4_sweep}",
     ],
 }
 st.table(pd.DataFrame(dashboard_data))
@@ -439,14 +459,13 @@ else:
       )
   )
 
-# Major Pivot Dots
 fig.add_trace(
     go.Scatter(
         x=df.index[df["PivotHigh"].notna()],
         y=df["PivotHigh"].dropna(),
         mode="markers",
         name="Major Pivot High (A)",
-        marker=dict(size=10, color=BEAR_COLOR, symbol="circle"),
+        marker=dict(size=9, color=BEAR_COLOR, symbol="circle"),
     )
 )
 
@@ -456,11 +475,10 @@ fig.add_trace(
         y=df["PivotLow"].dropna(),
         mode="markers",
         name="Major Pivot Low (V)",
-        marker=dict(size=10, color=BULL_COLOR, symbol="circle"),
+        marker=dict(size=9, color=BULL_COLOR, symbol="circle"),
     )
 )
 
-# BOS & Sweep Lines
 for line in chart_lines:
   fig.add_shape(
       type="line",
@@ -473,7 +491,6 @@ for line in chart_lines:
       ),
   )
 
-# Lines
 if not np.isnan(curr_eq):
   fig.add_hline(
       y=curr_eq,
@@ -502,7 +519,7 @@ fig.update_layout(
     template="plotly_dark",
     xaxis_title="Time",
     yaxis_title="Price",
-    height=650,
+    height=600,
     xaxis_rangeslider_visible=False,
     dragmode="pan",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
