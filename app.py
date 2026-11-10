@@ -1,6 +1,7 @@
 """
 ICT Structure & Liquidity Sweep Engine [v6] — Streamlit Edition
 ==============================================================
+Converts the TradingView Pine Script v6 indicator into a Python
 Streamlit application using yfinance for market data.
 
 Usage:
@@ -276,21 +277,21 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         decreasing_line_color="red",
     ))
 
-    # Major pivot dots
+    # Major pivot dots (Only show on recent bars to avoid clutter)
     if show_major_dots:
         maj_a = result["raw_maj_a"]
         maj_v = result["raw_maj_v"]
         for i in range(len(df)):
-            if not np.isnan(maj_a.iloc[i]) and i >= len(df) - 100:
+            if not np.isnan(maj_a.iloc[i]) and i >= len(df) - 150:
                 fig.add_trace(go.Scatter(
                     x=[i], y=[maj_a.iloc[i]], mode="markers",
-                    marker=dict(size=10, color="red", symbol="circle"),
+                    marker=dict(size=8, color="red", symbol="circle"),
                     name="Major High", showlegend=False
                 ))
-            if not np.isnan(maj_v.iloc[i]) and i >= len(df) - 100:
+            if not np.isnan(maj_v.iloc[i]) and i >= len(df) - 150:
                 fig.add_trace(go.Scatter(
                     x=[i], y=[maj_v.iloc[i]], mode="markers",
-                    marker=dict(size=10, color="green", symbol="circle"),
+                    marker=dict(size=8, color="green", symbol="circle"),
                     name="Major Low", showlegend=False
                 ))
 
@@ -301,71 +302,65 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         if drh >= 0 and drh < len(df) and not np.isnan(result["dealing_high"]):
             fig.add_trace(go.Scatter(
                 x=[drh], y=[result["dealing_high"]], mode="markers",
-                marker=dict(size=14, color="purple", symbol="diamond"),
+                marker=dict(size=12, color="purple", symbol="diamond"),
                 name="DR High", showlegend=False
             ))
         if drl >= 0 and drl < len(df) and not np.isnan(result["dealing_low"]):
             fig.add_trace(go.Scatter(
                 x=[drl], y=[result["dealing_low"]], mode="markers",
-                marker=dict(size=14, color="blue", symbol="diamond"),
+                marker=dict(size=12, color="blue", symbol="diamond"),
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines & labels (Clean TradingView style segments)
+    # BOS / Sweep lines & labels (TradingView style bounded segments)
     if show_bos_lines:
         for ev in result["events"]:
             idx = ev["idx"]
             price = ev["price"]
             label = ev["label"]
             ev_type = ev["type"]
-            color = "green" if "Bull" in ev_type or ev_type == "sweep_low" else "red"
+            is_bos = "bos" in ev_type
             
-            # Draw bounded line segment from event candle to current bar
+            color = "green" if "bull" in ev_type or ev_type == "sweep_low" else "red"
+            
+            # Line styling: BOS = solid width 2, Sweep = dashed width 1
+            line_dash = "solid" if is_bos else "dash"
+            line_width = 2 if is_bos else 1
+            
+            # Draw bounded line segment from the event candle index to current bar
             fig.add_shape(
                 type="line",
-                x0=idx, y0=price, x1=len(df)-1, y1=price,
-                line=dict(color=color, width=2, dash="solid" if "BOS" in label else "dash"),
+                x0=idx, y0=price,
+                x1=len(df) - 1, y1=price,
+                line=dict(color=color, width=line_width, dash=line_dash),
                 row=1, col=1
             )
+            
+            # Add annotation tag
             fig.add_annotation(
                 x=idx, y=price, text=label,
                 showarrow=True, arrowhead=2,
-                font=dict(color="white", size=10),
+                font=dict(color="white", size=9),
                 bgcolor=color, bordercolor=color,
                 borderwidth=1, borderpad=2,
                 row=1, col=1
             )
 
-    # Conditional sweep flags (grey lines)
-    for idx in result.get("sweep_high_flags", {}):
-        if idx > 0 and idx < len(df):
-            fig.add_shape(
-                type="line",
-                x0=idx, y0=df["High"].iloc[idx], x1=len(df)-1, y1=df["High"].iloc[idx],
-                line=dict(color="dimgray", width=1, dash="dash"),
-                row=1, col=1
-            )
-    for idx in result.get("sweep_low_flags", {}):
-        if idx > 0 and idx < len(df):
-            fig.add_shape(
-                type="line",
-                x0=idx, y0=df["Low"].iloc[idx], x1=len(df)-1, y1=df["Low"].iloc[idx],
-                line=dict(color="dimgray", width=1, dash="dash"),
-                row=1, col=1
-            )
-
-    # Equilibrium line
+    # Equilibrium line (bounded or subtle dot)
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
         fig.add_shape(
             type="line",
-            x0=0, y0=eq, x1=len(df)-1, y1=eq,
+            x0=max(0, len(df) - 100), y0=eq,
+            x1=len(df) - 1, y1=eq,
             line=dict(color="yellow", width=2, dash="dot"),
             row=1, col=1
         )
-        fig.add_annotation(x=df.index[0], y=eq, text=f"EQ: {eq:.5f}",
-                           showarrow=False, font=dict(color="yellow", size=10),
-                           row=1, col=1)
+        fig.add_annotation(
+            x=len(df) - 1, y=eq, text=f"EQ: {eq:.2f}",
+            showarrow=False, font=dict(color="yellow", size=10),
+            xanchor="left", row=1, col=1
+        )
 
     fig.update_layout(
         title="ICT Structure & Liquidity Sweep Engine [v6]",
@@ -479,7 +474,7 @@ def main():
     n = len(df)
     st.info(f"Showing {n} bars of {ticker} ({interval}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
-    # ── Multi-timeframe data (Fixed with max/5y periods for higher TFs) ──
+    # ── Multi-timeframe data ──
     with st.spinner("Computing multi-timeframe analysis..."):
         interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
         curr_tf = interval_map.get(interval, "1d")
@@ -494,7 +489,6 @@ def main():
             ("15", "15m", m15_len),
         ]:
             try:
-                # Use max history for higher timeframes so pivot lookbacks never return empty/NaN
                 p = "max" if tf_label in ["1M", "1W", "1D"] else ("1y" if interval in ["1d", "4h", "1h"] else "2y")
                 tdf = fetch_ohlc(ticker, period=p, interval=tf_interval)
                 if len(tdf) >= tf_len * 2 + 1:
