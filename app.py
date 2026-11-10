@@ -1,7 +1,6 @@
 """
 ICT Structure & Liquidity Sweep Engine [v6] — Streamlit Edition
 ==============================================================
-Converts the TradingView Pine Script v6 indicator into a Python
 Streamlit application using yfinance for market data.
 
 Usage:
@@ -14,6 +13,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import time
 
 # ─────────────────────────────────────────────────────────────────
 # HELPER: Fetch OHLC from yfinance
@@ -311,7 +311,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines & labels
+    # BOS / Sweep lines & labels (Clean TradingView style segments)
     if show_bos_lines:
         for ev in result["events"]:
             idx = ev["idx"]
@@ -319,31 +319,50 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
             label = ev["label"]
             ev_type = ev["type"]
             color = "green" if "Bull" in ev_type or ev_type == "sweep_low" else "red"
-            fig.add_hline(y=price, line_color=color,
-                          line_dash="solid" if "BOS" in label else "dash",
-                          line_width=2, row=1, col=1)
-            fig.add_annotation(x=idx, y=price, text=label,
-                               showarrow=True, arrowhead=2,
-                               font=dict(color="white", size=10),
-                               bgcolor=color, bordercolor=color,
-                               borderwidth=1, borderpad=2,
-                               row=1, col=1)
+            
+            # Draw bounded line segment from event candle to current bar
+            fig.add_shape(
+                type="line",
+                x0=idx, y0=price, x1=len(df)-1, y1=price,
+                line=dict(color=color, width=2, dash="solid" if "BOS" in label else "dash"),
+                row=1, col=1
+            )
+            fig.add_annotation(
+                x=idx, y=price, text=label,
+                showarrow=True, arrowhead=2,
+                font=dict(color="white", size=10),
+                bgcolor=color, bordercolor=color,
+                borderwidth=1, borderpad=2,
+                row=1, col=1
+            )
 
     # Conditional sweep flags (grey lines)
     for idx in result.get("sweep_high_flags", {}):
         if idx > 0 and idx < len(df):
-            fig.add_hline(y=df["High"].iloc[idx], line_color="dimgray",
-                          line_dash="dash", line_width=1, row=1, col=1)
+            fig.add_shape(
+                type="line",
+                x0=idx, y0=df["High"].iloc[idx], x1=len(df)-1, y1=df["High"].iloc[idx],
+                line=dict(color="dimgray", width=1, dash="dash"),
+                row=1, col=1
+            )
     for idx in result.get("sweep_low_flags", {}):
         if idx > 0 and idx < len(df):
-            fig.add_hline(y=df["Low"].iloc[idx], line_color="dimgray",
-                          line_dash="dash", line_width=1, row=1, col=1)
+            fig.add_shape(
+                type="line",
+                x0=idx, y0=df["Low"].iloc[idx], x1=len(df)-1, y1=df["Low"].iloc[idx],
+                line=dict(color="dimgray", width=1, dash="dash"),
+                row=1, col=1
+            )
 
     # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
-        fig.add_hline(y=eq, line_color="yellow", line_dash="dot",
-                      line_width=2, row=1, col=1)
+        fig.add_shape(
+            type="line",
+            x0=0, y0=eq, x1=len(df)-1, y1=eq,
+            line=dict(color="yellow", width=2, dash="dot"),
+            row=1, col=1
+        )
         fig.add_annotation(x=df.index[0], y=eq, text=f"EQ: {eq:.5f}",
                            showarrow=False, font=dict(color="yellow", size=10),
                            row=1, col=1)
@@ -418,6 +437,10 @@ def main():
     with col2:
         interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d"], index=5)
 
+    st.sidebar.subheader("Live Updates")
+    auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh", value=False)
+    refresh_rate = st.sidebar.slider("Refresh Interval (seconds)", 15, 300, 30)
+
     st.sidebar.subheader("Timeframe Strength Settings")
     m_len = st.sidebar.slider("Monthly Strength", 1, 12, 1)
     w_len = st.sidebar.slider("Weekly Strength", 1, 12, 1)
@@ -456,24 +479,24 @@ def main():
     n = len(df)
     st.info(f"Showing {n} bars of {ticker} ({interval}) — Last close: {df['Close'].iloc[-1]:.5f}")
 
-    # ── Multi-timeframe data ──
+    # ── Multi-timeframe data (Fixed with max/5y periods for higher TFs) ──
     with st.spinner("Computing multi-timeframe analysis..."):
         interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
         curr_tf = interval_map.get(interval, "1d")
 
-        tf_period = "1y" if interval in ["1d", "4h", "1h"] else "2y"
-
         tf_results = {}
         for tf_label, tf_interval, tf_len in [
-            ("1M", "1w", m_len),
-            ("1W", "1d", w_len),
+            ("1M", "1mo", m_len),
+            ("1W", "1wk", w_len),
             ("1D", "1d", d_len),
             ("240", "4h", h4_len),
             ("60", "1h", h1_len),
             ("15", "15m", m15_len),
         ]:
             try:
-                tdf = fetch_ohlc(ticker, period=tf_period, interval=tf_interval)
+                # Use max history for higher timeframes so pivot lookbacks never return empty/NaN
+                p = "max" if tf_label in ["1M", "1W", "1D"] else ("1y" if interval in ["1d", "4h", "1h"] else "2y")
+                tdf = fetch_ohlc(ticker, period=p, interval=tf_interval)
                 if len(tdf) >= tf_len * 2 + 1:
                     bias, zone, eq = tf_zone_data(tdf, tf_len)
                     tf_results[tf_label] = (bias, zone, eq)
@@ -505,7 +528,7 @@ def main():
 
     last_close = df["Close"].iloc[-1]
 
-    if curr_tf == "1w":
+    if curr_tf in ["1wk", "1mo"]:
         macro_title = "Macro (Monthly / Weekly Bias)"
         m_str = "M: BULL" if m_bias == 1 else "M: BEAR" if m_bias == -1 else "M: NEUTRAL"
         w_str = "W: BULL" if w_bias == 1 else "W: BEAR" if w_bias == -1 else "W: NEUTRAL"
@@ -588,6 +611,11 @@ def main():
             "Open": "{:.5f}", "High": "{:.5f}",
             "Low": "{:.5f}", "Close": "{:.5f}"
         }))
+
+    # ── Auto-Refresh Loop for Live Updates ──
+    if auto_refresh:
+        time.sleep(refresh_rate)
+        st.rerun()
 
 
 if __name__ == "__main__":
