@@ -358,12 +358,11 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
 
 
 # ─────────────────────────────────────────────────────────────────
-# BUILD DASHBOARD — NO font= PARAMETER ANYWHERE
+# BUILD DASHBOARD
 # ─────────────────────────────────────────────────────────────────
 def render_dashboard(result: dict, text_size: str):
     fs = {"tiny": 10, "small": 12, "normal": 14, "large": 18}[text_size]
 
-    # Header row using HTML for size control
     st.markdown(
         f"<div style='font-size:{fs+4}px; font-weight:bold; margin-bottom:4px;'>"
         f"ICT STRUCTURE ENGINE &nbsp;|&nbsp; METRIC / VALUE</div>",
