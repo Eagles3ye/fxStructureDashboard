@@ -431,4 +431,13 @@ fig.update_layout(
 fig.update_xaxes(fixedrange=False)
 fig.update_yaxes(fixedrange=False, autorange=True)
 
-st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
+
+st.plotly_chart(
+    fig,
+    use_container_width=True,
+    config={
+        "scrollZoom": True,
+        "displayModeBar": True,  # Ensures the toolbar is visible on mobile
+        "modeBarButtonsToAdd": ["zoom2d", "pan2d", "autoScale2d", "resetScale2d"],
+    },
+)
