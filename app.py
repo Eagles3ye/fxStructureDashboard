@@ -127,20 +127,14 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                 sweep_high_flags: dict, sweep_low_flags: dict,
                 is_bull_aligned: bool, is_bear_aligned: bool,
                 macro_title: str, macro_text: str, macro_col: str):
-    """
-    Run the full ICT Structure engine on a DataFrame.
-    Returns dict with all computed values for the dashboard + plot data.
-    """
     n = len(df)
     if n < major_len * 2 + 1:
         return None
 
-    # ── Major Pivots ──
     raw_maj_a, raw_maj_v = detect_pivots(df, major_len)
 
-    # ── State trackers ──
     last_maj_a_val = np.nan
-    last_maj_a_idx = -1
+    last_maj_a_idx = -1          # bar index where pivot was CONFIRMED (i - major_len)
     maj_a_broken = False
     active_dr_high_bar = -1
 
@@ -156,21 +150,22 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
     events_log = []
 
     for i in range(major_len, n):
-        # Update major pivot A
+        # ── New pivot confirmed ──
         if not np.isnan(raw_maj_a.iloc[i]):
             last_maj_a_val = raw_maj_a.iloc[i]
-            last_maj_a_idx = i
+            last_maj_a_idx = i - major_len      # confirm bar (TV offset behavior)
             maj_a_broken = False
-            active_dr_high_bar = i
+            active_dr_high_bar = i - major_len
 
         if not np.isnan(raw_maj_v.iloc[i]):
             last_maj_v_val = raw_maj_v.iloc[i]
-            last_maj_v_idx = i
+            last_maj_v_idx = i - major_len
             maj_v_broken = False
-            active_dr_low_bar = i
+            active_dr_low_bar = i - major_len
 
-        # BOS / Sweep — Major A (high)
-        if not np.isnan(last_maj_a_val) and not maj_a_broken and i > last_maj_a_idx:
+        # ── BOS / Sweep — Major High (A) ──
+        if (not np.isnan(last_maj_a_val) and not maj_a_broken
+                and last_maj_a_idx >= 0 and i > last_maj_a_idx):
             if df["High"].iloc[i] > last_maj_a_val:
                 if df["Close"].iloc[i] > last_maj_a_val:
                     maj_a_broken = True
@@ -179,7 +174,9 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     next_target = "Target: Next External High / FVG"
                     events_log.append({
                         "type": "bos_bull", "idx": i,
-                        "price": last_maj_a_val, "label": "BOS"
+                        "price": last_maj_a_val, "label": "BOS",
+                        "line_x1": last_maj_a_idx, "line_x2": i,
+                        "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
                     })
                 else:
                     last_event = "LIQUIDITY SWEEP HIGH (Wick)"
@@ -187,11 +184,14 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     next_target = "Target: EQ (50%) -> Range Low"
                     events_log.append({
                         "type": "sweep_high", "idx": i,
-                        "price": last_maj_a_val, "label": "SWEEP"
+                        "price": last_maj_a_val, "label": "SWEEP",
+                        "line_x1": last_maj_a_idx, "line_x2": i,
+                        "line_y1": last_maj_a_val, "line_y2": last_maj_a_val
                     })
 
-        # BOS / Sweep — Major V (low)
-        if not np.isnan(last_maj_v_val) and not maj_v_broken and i > last_maj_v_idx:
+        # ── BOS / Sweep — Major Low (V) ──
+        if (not np.isnan(last_maj_v_val) and not maj_v_broken
+                and last_maj_v_idx >= 0 and i > last_maj_v_idx):
             if df["Low"].iloc[i] < last_maj_v_val:
                 if df["Close"].iloc[i] < last_maj_v_val:
                     maj_v_broken = True
@@ -200,7 +200,9 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     next_target = "Target: Next External Low / FVG"
                     events_log.append({
                         "type": "bos_bear", "idx": i,
-                        "price": last_maj_v_val, "label": "BOS"
+                        "price": last_maj_v_val, "label": "BOS",
+                        "line_x1": last_maj_v_idx, "line_x2": i,
+                        "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
                     })
                 else:
                     last_event = "LIQUIDITY SWEEP LOW (Wick)"
@@ -208,7 +210,9 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
                     next_target = "Target: EQ (50%) -> Range High"
                     events_log.append({
                         "type": "sweep_low", "idx": i,
-                        "price": last_maj_v_val, "label": "SWEEP"
+                        "price": last_maj_v_val, "label": "SWEEP",
+                        "line_x1": last_maj_v_idx, "line_x2": i,
+                        "line_y1": last_maj_v_val, "line_y2": last_maj_v_val
                     })
 
     # ── Dealing Range ──
@@ -260,7 +264,7 @@ def analyze_ict(df: pd.DataFrame, major_len: int, lookback: int,
 
 
 # ─────────────────────────────────────────────────────────────────
-# PLOT: Build Plotly figure
+# PLOT:  Plotly figure
 # ─────────────────────────────────────────────────────────────────
 def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
                 show_bos_lines: bool, show_eq_line: bool):
@@ -277,20 +281,21 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         decreasing_line_color="red",
     ))
 
-    # Major pivot dots
+    # Major pivot dots (only last 100 bars, like TV)
     if show_major_dots:
         maj_a = result["raw_maj_a"]
         maj_v = result["raw_maj_v"]
-        for i in range(len(df)):
-            if not np.isnan(maj_a.iloc[i]) and i >= len(df) - 100:
+        start = max(0, len(df) - 100)
+        for i in range(start, len(df)):
+            if not np.isnan(maj_a.iloc[i]):
                 fig.add_trace(go.Scatter(
-                    x=[i], y=[maj_a.iloc[i]], mode="markers",
+                    x=[df.index[i]], y=[maj_a.iloc[i]], mode="markers",
                     marker=dict(size=10, color="red", symbol="circle"),
                     name="Major High", showlegend=False
                 ))
-            if not np.isnan(maj_v.iloc[i]) and i >= len(df) - 100:
+            if not np.isnan(maj_v.iloc[i]):
                 fig.add_trace(go.Scatter(
-                    x=[i], y=[maj_v.iloc[i]], mode="markers",
+                    x=[df.index[i]], y=[maj_v.iloc[i]], mode="markers",
                     marker=dict(size=10, color="green", symbol="circle"),
                     name="Major Low", showlegend=False
                 ))
@@ -301,72 +306,73 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         drl = result["active_dr_low_bar"]
         if drh >= 0 and drh < len(df) and not np.isnan(result["dealing_high"]):
             fig.add_trace(go.Scatter(
-                x=[drh], y=[result["dealing_high"]], mode="markers",
+                x=[df.index[drh]], y=[result["dealing_high"]], mode="markers",
                 marker=dict(size=14, color="purple", symbol="diamond"),
                 name="DR High", showlegend=False
             ))
         if drl >= 0 and drl < len(df) and not np.isnan(result["dealing_low"]):
             fig.add_trace(go.Scatter(
-                x=[drl], y=[result["dealing_low"]], mode="markers",
+                x=[df.index[drl]], y=[result["dealing_low"]], mode="markers",
                 marker=dict(size=14, color="blue", symbol="diamond"),
                 name="DR Low", showlegend=False
             ))
 
-    # BOS / Sweep lines & labels (Clean TradingView style segments)
+    # BOS / Sweep horizontal lines (from pivot confirm bar to current bar)
     if show_bos_lines:
         for ev in result["events"]:
-            idx = ev["idx"]
-            price = ev["price"]
+            x1 = df.index[ev["line_x1"]]
+            x2 = df.index[ev["line_x2"]]
+            y = ev["line_y1"]
             label = ev["label"]
-            ev_type = ev["type"]
-            color = "green" if "Bull" in ev_type or ev_type == "sweep_low" else "red"
-            
-            # Draw bounded line segment from event candle to current bar
-            fig.add_shape(
-                type="line",
-                x0=idx, y0=price, x1=len(df)-1, y1=price,
-                line=dict(color=color, width=2, dash="solid" if "BOS" in label else "dash"),
-                row=1, col=1
-            )
+            color = "green" if ev["type"] in ("bos_bull", "sweep_low") else "red"
+            dash = "solid" if "BOS" in label else "dash"
+
+            fig.add_trace(go.Scatter(
+                x=[x1, x2], y=[y, y], mode="lines",
+                line=dict(color=color, width=2, dash=dash),
+                showlegend=False, hoverinfo="skip"
+            ))
+
+            # Label at the right end (current bar)
             fig.add_annotation(
-                x=idx, y=price, text=label,
-                showarrow=True, arrowhead=2,
+                x=x2, y=y, text=label,
+                showarrow=False,
+                xanchor="left", yanchor="bottom",
                 font=dict(color="white", size=10),
                 bgcolor=color, bordercolor=color,
                 borderwidth=1, borderpad=2,
-                row=1, col=1
             )
 
-    # Conditional sweep flags (grey lines)
+    # Conditional sweep flags (grey dashed lines)
     for idx in result.get("sweep_high_flags", {}):
         if idx > 0 and idx < len(df):
-            fig.add_shape(
-                type="line",
-                x0=idx, y0=df["High"].iloc[idx], x1=len(df)-1, y1=df["High"].iloc[idx],
+            fig.add_trace(go.Scatter(
+                x=[df.index[idx-1], df.index[idx]],
+                y=[df["High"].iloc[idx], df["High"].iloc[idx]],
+                mode="lines",
                 line=dict(color="dimgray", width=1, dash="dash"),
-                row=1, col=1
-            )
+                showlegend=False, hoverinfo="skip"
+            ))
     for idx in result.get("sweep_low_flags", {}):
         if idx > 0 and idx < len(df):
-            fig.add_shape(
-                type="line",
-                x0=idx, y0=df["Low"].iloc[idx], x1=len(df)-1, y1=df["Low"].iloc[idx],
+            fig.add_trace(go.Scatter(
+                x=[df.index[idx-1], df.index[idx]],
+                y=[df["Low"].iloc[idx], df["Low"].iloc[idx]],
+                mode="lines",
                 line=dict(color="dimgray", width=1, dash="dash"),
-                row=1, col=1
-            )
+                showlegend=False, hoverinfo="skip"
+            ))
 
     # Equilibrium line
     if show_eq_line and not np.isnan(result["eq_price"]):
         eq = result["eq_price"]
-        fig.add_shape(
-            type="line",
-            x0=0, y0=eq, x1=len(df)-1, y1=eq,
-            line=dict(color="yellow", width=2, dash="dot"),
-            row=1, col=1
+        fig.add_hline(y=eq, line_color="yellow", line_dash="dot",
+                      line_width=2)
+        fig.add_annotation(
+            x=df.index[0], y=eq, text=f"EQ: {eq:.5f}",
+            showarrow=False, xanchor="left",
+            font=dict(color="yellow", size=10),
         )
-        fig.add_annotation(x=df.index[0], y=eq, text=f"EQ: {eq:.5f}",
-                           showarrow=False, font=dict(color="yellow", size=10),
-                           row=1, col=1)
 
     fig.update_layout(
         title="ICT Structure & Liquidity Sweep Engine [v6]",
@@ -375,6 +381,7 @@ def build_chart(result: dict, show_major_dots: bool, show_range_dots: bool,
         xaxis_rangeslider_visible=False,
     )
     return fig
+
 
 
 # ─────────────────────────────────────────────────────────────────
