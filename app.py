@@ -35,7 +35,10 @@ def load_data(symbol, tf):
   yf_interval = interval_map.get(tf, "60m")
   period = "60d" if yf_interval in ["60m", "240m"] else "1y"
 
-  df = yf.download(symbol, period=period, interval=yf_interval, progress=False)
+  # FIX APPLIED: Added threads=False to prevent thread-pool worker errors on Streamlit Cloud
+  df = yf.download(
+      symbol, period=period, interval=yf_interval, progress=False, threads=False
+  )
   if df.empty:
     return df
 
@@ -142,7 +145,9 @@ curr_zone = df["Zone"].iloc[-1]
 
 # --- Macro Alignment Context ---
 df_daily = (
-    yf.download(ticker, period="6mo", interval="1d", progress=False)
+    yf.download(
+        ticker, period="6mo", interval="1d", progress=False, threads=False
+    )
     if timeframe != "1d"
     else df
 )
