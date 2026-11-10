@@ -156,7 +156,7 @@ def compute_pivots(data, length):
 
 df = compute_pivots(df, major_len)
 
-# --- Dealing Range & Structure Event Logic ---
+# --- Dealing Range, Structure & Line Event Logic ---
 dealing_high = np.nan
 dealing_low = np.nan
 
@@ -166,8 +166,14 @@ eq_list = []
 zones = []
 event_list = []
 
+# Storage for chart lines (BOS & Sweeps)
+chart_lines = []
+
 last_maj_a = np.nan
+last_maj_a_idx = 0
 last_maj_v = np.nan
+last_maj_v_idx = 0
+
 maj_a_broken = False
 maj_v_broken = False
 
@@ -180,34 +186,76 @@ for i in range(len(df)):
   close_val = df["Close"].iloc[i]
   high_val = df["High"].iloc[i]
   low_val = df["Low"].iloc[i]
+  curr_time = df.index[i]
 
   if not np.isnan(ph):
     last_maj_a = ph
+    last_maj_a_idx = i
     dealing_high = ph
     maj_a_broken = False
 
   if not np.isnan(pl):
     last_maj_v = pl
+    last_maj_v_idx = i
     dealing_low = pl
     maj_v_broken = False
 
+  # Check Break of Structure (BOS) or Sweeps
   if not np.isnan(last_maj_a) and not maj_a_broken and high_val > last_maj_a:
+    start_time = df.index[last_maj_a_idx]
     if close_val > last_maj_a:
       maj_a_broken = True
       current_event = "BOS Bullish (Body Close)"
       current_target = "Target: Next External High / FVG"
+      # BOS Line: Solid, Weight 2
+      chart_lines.append({
+          "x0": start_time,
+          "x1": curr_time,
+          "y": last_maj_a,
+          "color": BULL_COLOR,
+          "width": 2,
+          "dash": "solid",
+      })
     else:
       current_event = "LIQUIDITY SWEEP HIGH (Wick)"
       current_target = "Target: EQ (50%) -> Range Low"
+      # Sweep Line: Dotted/Dashed, Weight 1
+      chart_lines.append({
+          "x0": start_time,
+          "x1": curr_time,
+          "y": last_maj_a,
+          "color": BEAR_COLOR,
+          "width": 1,
+          "dash": "dot",
+      })
 
   if not np.isnan(last_maj_v) and not maj_v_broken and low_val < last_maj_v:
+    start_time = df.index[last_maj_v_idx]
     if close_val < last_maj_v:
       maj_v_broken = True
       current_event = "BOS Bearish (Body Close)"
       current_target = "Target: Next External Low / FVG"
+      # BOS Line: Solid, Weight 2
+      chart_lines.append({
+          "x0": start_time,
+          "x1": curr_time,
+          "y": last_maj_v,
+          "color": BEAR_COLOR,
+          "width": 2,
+          "dash": "solid",
+      })
     else:
       current_event = "LIQUIDITY SWEEP LOW (Wick)"
       current_target = "Target: EQ (50%) -> Range High"
+      # Sweep Line: Dotted/Dashed, Weight 1
+      chart_lines.append({
+          "x0": start_time,
+          "x1": curr_time,
+          "y": last_maj_v,
+          "color": BULL_COLOR,
+          "width": 1,
+          "dash": "dot",
+      })
 
   eq = (
       (dealing_high + dealing_low) / 2
@@ -341,7 +389,7 @@ dashboard_data = {
 }
 st.table(pd.DataFrame(dashboard_data))
 
-# --- Interactive Plotly Chart (Default to Pan) ---
+# --- Interactive Plotly Chart ---
 st.subheader(
     f"🕯️ Structure & Liquidity Chart ({selected_asset_name} -"
     f" {timeframe.upper()})"
@@ -349,6 +397,7 @@ st.subheader(
 
 fig = go.Figure()
 
+# 1. Main Price Series
 if chart_style == "Candlestick":
   fig.add_trace(
       go.Candlestick(
@@ -371,7 +420,7 @@ else:
       )
   )
 
-# Major Pivot Dots
+# 2. Major Pivot Dots
 fig.add_trace(
     go.Scatter(
         x=df.index[df["PivotHigh"].notna()],
@@ -392,7 +441,20 @@ fig.add_trace(
     )
 )
 
-# Lines
+# 3. Draw BOS & Sweep Lines dynamically onto the chart
+for line in chart_lines:
+  fig.add_shape(
+      type="line",
+      x0=line["x0"],
+      y0=line["y"],
+      x1=line["x1"],
+      y1=line["y"],
+      line=dict(
+          color=line["color"], width=line["width"], dash=line["dash"]
+      ),
+  )
+
+# 4. Equilibrium & Dealing Range Lines
 if not np.isnan(curr_eq):
   fig.add_hline(
       y=curr_eq,
@@ -417,27 +479,26 @@ if not np.isnan(curr_dl):
       annotation_text=f"Dealing Low: {curr_dl:.4f}",
   )
 
-# Set default interaction mode to 'pan' and enable axis scaling
+# Layout configurations (Pan default, scroll zoom, and mobile toolbar)
 fig.update_layout(
     template="plotly_dark",
     xaxis_title="Time",
     yaxis_title="Price",
     height=650,
     xaxis_rangeslider_visible=False,
-    dragmode="pan",  # <--- DEFAULT INTERACTION IS NOW PAN
+    dragmode="pan",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 
 fig.update_xaxes(fixedrange=False)
 fig.update_yaxes(fixedrange=False, autorange=True)
 
-
 st.plotly_chart(
     fig,
     use_container_width=True,
     config={
         "scrollZoom": True,
-        "displayModeBar": True,  # Ensures the toolbar is visible on mobile
+        "displayModeBar": True,
         "modeBarButtonsToAdd": ["zoom2d", "pan2d", "autoScale2d", "resetScale2d"],
     },
 )
