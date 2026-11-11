@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# Optional: Try importing yfinance for live data fetching
 try:
   import yfinance as yf
 
@@ -13,25 +12,47 @@ except ImportError:
 
 # Page Configuration
 st.set_page_config(
-    page_title="ICT Structure & Liquidity Sweep Engine",
-    page_icon="📈",
+    page_title="ICT Structure & Liquidity Sweep Engine [v6]",
+    page_icon="🛡️",
     layout="wide",
 )
 
-st.title("🛡️ 6if Structure & Liquidity Sweep Engine [v6] - Streamlit Mirror")
+st.title("🛡️ 6if Structure & Liquidity Sweep Engine [v6] - Full Mirror")
 st.markdown(
-    "Mirroring TradingView Pine Script v6 ICT concepts: Major Pivots, BOS,"
-    " Liquidity Sweeps, Equilibrium (EQ), and Dealing Ranges."
+    "Accurately mirrors TradingView Pine Script v6: Major Pivots, BOS/Sweeps,"
+    " CRT Lookback Windows, Bounded EQ Line, and Multi-Timeframe Macro Table."
 )
 
-# --- Sidebar Inputs ---
-st.sidebar.header("⚙️ Settings & Inputs")
+# --- Sidebar Inputs & Controls ---
+st.sidebar.header("⚙️ Configuration & Tickers")
 
-symbol = st.sidebar.text_input("Ticker Symbol", value="AAPL")
+# Ticker Selection Dropdown + Custom Input
+ticker_options = [
+    "AAPL",
+    "MSFT",
+    "BTC-USD",
+    "EURUSD=X",
+    "GC=F",
+    "TSLA",
+    "ETH-USD",
+    "Custom...",
+]
+selected_ticker_option = st.sidebar.selectbox("Select Asset", ticker_options)
+
+if selected_ticker_option == "Custom...":
+  symbol = st.sidebar.text_input(
+      "Enter Custom Ticker (Yahoo Finance format)", value="NVDA"
+  ).upper()
+else:
+  symbol = selected_ticker_option
+
 interval = st.sidebar.selectbox(
-    "Timeframe", ["1d", "1h", "15m"], index=0
-)  # Simplified for python mapping
+    "Chart Timeframe", ["1d", "1h", "15m", "4h"], index=0
+)
+period_map = {"1d": "1y", "1h": "60d", "15m": "30d", "4h": "60d"}
+selected_period = period_map.get(interval, "6mo")
 
+st.sidebar.subheader("Pivot Settings")
 major_len = st.sidebar.number_input(
     "Major Swing Length", min_value=2, max_value=50, value=3, step=1
 )
@@ -55,95 +76,211 @@ eq_color = st.sidebar.color_picker("Equilibrium (EQ) Color", value="#FFFF00")
 
 
 # --- Data Loading Function ---
-@st.cache_data
-def load_data(ticker, period="6mo", interval="1d"):
+@st.cache_data(ttl=3600)
+def load_data(ticker, period, interval):
   if YFINANCE_AVAILABLE:
     try:
-      df = yf.download(ticker, period=period, interval=interval, progress=False)
+      # Fix interval for yfinance compatibility if 4h is selected
+      yf_interval = "1h" if interval == "4h" else interval
+      df = yf.download(
+          ticker, period=period, interval=yf_interval, progress=False
+      )
       if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
       df = df.dropna()
+      if interval == "4h" and not df.empty:
+        df = (
+            df.resample("4h")
+            .agg({
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            })
+            .dropna()
+        )
       return df
     except Exception as e:
       st.warning(
-          f"Could not fetch data from yfinance ({e}). Generating synthetic"
+          f"Could not fetch data from yfinance ({e}). Falling back to synthetic"
           " data..."
       )
 
-  # Fallback Synthetic Data Generator if yfinance fails or is missing
+  # Synthetic Data Fallback
   np.random.seed(42)
-  dates = pd.date_range(end=pd.Timestamp.today(), periods=200, freq="B")
-  close = 150 + np.cumsum(np.random.randn(200) * 2)
-  high = close + np.random.rand(200) * 3
-  low = close - np.random.rand(200) * 3
-  open_p = close + (np.random.rand(200) - 0.5) * 2
+  dates = pd.date_range(end=pd.Timestamp.today(), periods=300, freq="B")
+  close = 150 + np.cumsum(np.random.randn(300) * 2)
+  high = close + np.random.rand(300) * 3
+  low = close - np.random.rand(300) * 3
+  open_p = close + (np.random.rand(300) - 0.5) * 2
   df = pd.DataFrame(
       {
           "Open": open_p,
           "High": high,
           "Low": low,
           "Close": close,
-          "Volume": np.random.randint(1000, 10000, size=200),
+          "Volume": np.random.randint(1000, 10000, size=300),
       },
       index=dates,
   )
   return df
 
 
-df = load_data(symbol, interval=interval)
+df = load_data(symbol, selected_period, interval)
 
 if df.empty:
-  st.error("No data available for the selected symbol/timeframe.")
+  st.error("No data retrieved for the selected asset. Please check the symbol.")
   st.stop()
 
 
-# --- Pivot Calculation Logic (Python equivalent of ta.pivothigh / pivotlow) ---
-def calculate_pivots(df, length):
-  highs = df["High"].values
-  lows = df["Low"].values
-  n = len(df)
-
-  pivot_highs = [np.nan] * n
-  pivot_lows = [np.nan] * n
-
+# --- Helper Functions: Pivot Engine & Bias Calculation ---
+def calculate_pivots(data, length):
+  highs = data["High"].values
+  lows = data["Low"].values
+  n = len(data)
+  ph = [np.nan] * n
+  pl = [np.nan] * n
   for i in range(length, n - length):
-    # Check for Pivot High
-    is_ph = True
-    for j in range(1, length + 1):
-      if highs[i] < highs[i - j] or highs[i] < highs[i + j]:
-        is_ph = False
-        break
-    if is_ph:
-      pivot_highs[i] = highs[i]
-
-    # Check for Pivot Low
-    is_pl = True
-    for j in range(1, length + 1):
-      if lows[i] > lows[i - j] or lows[i] > lows[i + j]:
-        is_pl = False
-        break
-    if is_pl:
-      pivot_lows[i] = lows[i]
-
-  df["PivotHigh"] = pivot_highs
-  df["PivotLow"] = pivot_lows
-  return df
+    if all(highs[i] >= highs[i - j] for j in range(1, length + 1)) and all(
+        highs[i] >= highs[i + j] for j in range(1, length + 1)
+    ):
+      ph[i] = highs[i]
+    if all(lows[i] <= lows[i - j] for j in range(1, length + 1)) and all(
+        lows[i] <= lows[i + j] for j in range(1, length + 1)
+    ):
+      pl[i] = lows[i]
+  data["PivotHigh"] = ph
+  data["PivotLow"] = pl
+  return data
 
 
+def get_bias_state(data, length=3):
+  if len(data) < (length * 2 + 1):
+    return 0, "Waiting"
+  temp_df = calculate_pivots(data.copy(), length)
+  hi, lo, b, ev = np.nan, np.nan, 0, "Waiting"
+  hi_broken, lo_broken = False, False
+
+  for i in range(len(temp_df)):
+    ph = temp_df["PivotHigh"].iloc[i]
+    pl = temp_df["PivotLow"].iloc[i]
+    h = temp_df["High"].iloc[i]
+    l = temp_df["Low"].iloc[i]
+    c = temp_df["Close"].iloc[i]
+
+    if not np.isnan(ph):
+      hi = ph
+      hi_broken = False
+    if not np.isnan(pl):
+      lo = pl
+      lo_broken = False
+
+    if not np.isnan(hi) and not hi_broken and h > hi:
+      if c > hi:
+        hi_broken = True
+        b = 1
+        ev = "BOS Bullish"
+      else:
+        ev = "Sweep High"
+    if not np.isnan(lo) and not lo_broken and l < lo:
+      if c < lo:
+        lo_broken = True
+        b = -1
+        ev = "BOS Bearish"
+      else:
+        ev = "Sweep Low"
+  return b, ev
+
+
+# Resample for HTF Macro table alignment
+def get_htf_bias(df_base):
+  try:
+    df_m = (
+        df_base.resample("ME")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+        })
+        .dropna()
+    )
+    df_w = (
+        df_base.resample("W")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+        })
+        .dropna()
+    )
+    df_d = (
+        df_base.resample("D")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+        })
+        .dropna()
+    )
+    df_4h = (
+        df_base.resample("4h")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+        })
+        .dropna()
+    )
+    df_1h = (
+        df_base.resample("1h")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+        })
+        .dropna()
+    )
+
+    m_b, m_e = get_bias_state(df_m, 3) if len(df_m) > 7 else (0, "N/A")
+    w_b, w_e = get_bias_state(df_w, 3) if len(df_w) > 7 else (0, "N/A")
+    d_b, d_e = get_bias_state(df_d, 3) if len(df_d) > 7 else (0, "N/A")
+    h4_b, h4_e = get_bias_state(df_4h, 3) if len(df_4h) > 7 else (0, "N/A")
+    h1_b, h1_e = get_bias_state(df_1h, 3) if len(df_1h) > 7 else (0, "N/A")
+
+    return {
+        "Monthly": (m_b, m_e),
+        "Weekly": (w_b, w_e),
+        "Daily": (d_b, d_e),
+        "H4": (h4_b, h4_e),
+        "H1": (h1_b, h1_e),
+    }
+  except Exception:
+    return {
+        "Monthly": (0, "N/A"),
+        "Weekly": (0, "N/A"),
+        "Daily": (0, "N/A"),
+        "H4": (0, "N/A"),
+        "H1": (0, "N/A"),
+    }
+
+
+htf_data = get_htf_bias(df)
+
+# --- Main Chart Pivot & Structure Processing ---
 df = calculate_pivots(df, major_len)
 
-# --- State Tracking & BOS / Sweep Engine ---
-last_swing_high = np.nan
-last_swing_low = np.nan
-swing_h_break = False
-swing_l_break = False
-
+last_swing_high, last_swing_low = np.nan, np.nan
+swing_h_break, swing_l_break = False, False
 last_event = "Initializing Structure..."
-event_col = "gray"
 next_target = "Waiting for Event..."
-
-events_log = []
 lines_to_plot = []
+crt_sweeps = []
 
 for i in range(len(df)):
   ph = df["PivotHigh"].iloc[i]
@@ -151,75 +288,91 @@ for i in range(len(df)):
   h = df["High"].iloc[i]
   l = df["Low"].iloc[i]
   c = df["Close"].iloc[i]
+  o = df["Open"].iloc[i]
   dt = df.index[i]
 
   if not np.isnan(ph):
     last_swing_high = ph
     swing_h_break = False
     last_swing_h_time = dt
-
   if not np.isnan(pl):
     last_swing_low = pl
     swing_l_break = False
     last_swing_l_time = dt
 
-  # Check High Break / Sweep
+  # BOS / Sweep Engine
   if not np.isnan(last_swing_high) and not swing_h_break and h > last_swing_high:
     if c > last_swing_high:
       swing_h_break = True
       last_event = "BOS Bullish (Body Close)"
-      event_col = bull_color
       next_target = "Target: Next External High / FVG"
       if show_lines:
-        lines_to_plot.append({
-            "type": "bull_bos",
-            "x0": last_swing_h_time,
-            "x1": dt,
-            "y0": last_swing_high,
-            "y1": last_swing_high,
-        })
+        lines_to_plot.append((
+            last_swing_h_time,
+            dt,
+            last_swing_high,
+            last_swing_high,
+            bull_color,
+            false,
+        ))
     else:
       last_event = "LIQUIDITY SWEEP HIGH (Wick)"
-      event_col = bear_color
       next_target = "Target: EQ (50%) -> Range Low"
       if show_lines:
-        lines_to_plot.append({
-            "type": "bear_sweep",
-            "x0": last_swing_h_time,
-            "x1": dt,
-            "y0": last_swing_high,
-            "y1": last_swing_high,
-        })
+        lines_to_plot.append((
+            last_swing_h_time,
+            dt,
+            last_swing_high,
+            last_swing_high,
+            bear_color,
+            True,
+        ))
 
-  # Check Low Break / Sweep
   if not np.isnan(last_swing_low) and not swing_l_break and l < last_swing_low:
     if c < last_swing_low:
       swing_l_break = True
       last_event = "BOS Bearish (Body Close)"
-      event_col = bear_color
       next_target = "Target: Next External Low / FVG"
       if show_lines:
-        lines_to_plot.append({
-            "type": "bear_bos",
-            "x0": last_swing_l_time,
-            "x1": dt,
-            "y0": last_swing_low,
-            "y1": last_swing_low,
-        })
+        lines_to_plot.append((
+            last_swing_l_time,
+            dt,
+            last_swing_low,
+            last_swing_low,
+            bear_color,
+            False,
+        ))
     else:
       last_event = "LIQUIDITY SWEEP LOW (Wick)"
-      event_col = bull_color
       next_target = "Target: EQ (50%) -> Range High"
       if show_lines:
-        lines_to_plot.append({
-            "type": "bull_sweep",
-            "x0": last_swing_l_time,
-            "x1": dt,
-            "y0": last_swing_low,
-            "y1": last_swing_low,
-        })
+        lines_to_plot.append((
+            last_swing_l_time,
+            dt,
+            last_swing_low,
+            last_swing_low,
+            bull_color,
+            True,
+        ))
 
-# Dealing Range & EQ
+  # CRT Sweeps (Lookback Window Logic matching Pine script `sweepBars`)
+  if i >= len(df) - sweep_bars and i > 0:
+    crh = df["High"].iloc[i - 1]
+    crl = df["Low"].iloc[i - 1]
+    bull_bar = c > o
+    bear_sweep = c < crh if bull_bar else o < crh
+    sweep_high = h > crh and bear_sweep
+
+    bull_sweep_cond = o > crl if bull_bar else c > crl
+    sweep_low = l < crl and bull_sweep_cond
+
+    if show_lines:
+      if sweep_high:
+        crt_sweeps.append((df.index[i - 1], dt, crh, crh, "#4B4B4B"))
+      if sweep_low:
+        crt_sweeps.append((df.index[i - 1], dt, crl, crl, "#4B4B4B"))
+
+# Dealing Range & EQ calculations
 dealing_high = last_swing_high
 dealing_low = last_swing_low
 eq = (
@@ -233,47 +386,50 @@ active_zone = (
     if np.isnan(eq)
     else ("PREMIUM" if current_close > eq else "DISCOUNT")
 )
-zone_col = (
-    "gray"
-    if np.isnan(eq)
-    else (bear_color if current_close > eq else bull_color)
-)
 
-# --- Dashboard Metrics (Matching Pine Script Table) ---
-st.subheader("📊 ICT Dashboard Engine")
+# --- Dashboard View & Metrics ---
+st.subheader(f"📊 ICT Structure Engine Dashboard ({symbol})")
 
 col1, col2, col3 = st.columns(3)
 with col1:
   st.metric(
-      label="Dealing High",
-      value=f"{dealing_high:.2f}" if not np.isnan(dealing_high) else "N/A",
+      "Dealing High",
+      f"{dealing_high:.2f}" if not np.isnan(dealing_high) else "N/A",
   )
-  st.metric(
-      label="Current Pricing Zone",
-      value=active_zone,
-      delta="Premium / Discount",
-  )
+  st.metric("Pricing Zone", active_zone)
 with col2:
-  st.metric(
-      label="Equilibrium (50% EQ)",
-      value=f"{eq:.2f}" if not np.isnan(eq) else "N/A",
-  )
-  st.metric(label="Last Structure Event", value=last_event)
+  st.metric("Equilibrium (50% EQ)", f"{eq:.2f}" if not np.isnan(eq) else "N/A")
+  st.metric("Last Structure Event", last_event)
 with col3:
   st.metric(
-      label="Dealing Low",
-      value=f"{dealing_low:.2f}" if not np.isnan(dealing_low) else "N/A",
+      "Dealing Low",
+      f"{dealing_low:.2f}" if not np.isnan(dealing_low) else "N/A",
   )
-  st.metric(label="Dynamic Target Objective", value=next_target)
+  st.metric("Dynamic Target Objective", next_target)
+
+# Macro Alignment Table Display
+st.markdown("### 🌐 Multi-Timeframe Macro Alignment Matrix")
+macro_cols = st.columns(5)
+tf_names = ["Monthly", "Weekly", "Daily", "H4", "H1"]
+for idx, tf in enumerate(tf_names):
+  b_val, e_str = htf_data[tf]
+  color_badge = (
+      "🟢 Bullish" if b_val == 1 else ("🔴 Bearish" if b_val == -1 else "⚪ Neutral")
+  )
+  with macro_cols[idx]:
+    st.markdown(
+        f"**{tf}**\n\nStatus: `{e_str}`\n\nBias: **{color_badge}**",
+        unsafe_allow_html=True,
+    )
 
 st.markdown("---")
 
-# --- Plotly Chart Visualization ---
-st.subheader("📈 Chart Visuals & Structure Mirror")
+# --- Plotly Chart Visuals ---
+st.subheader("📈 Interactive Price & Structure Chart")
 
 fig = go.Figure()
 
-# Candlestick chart
+# Candlesticks
 fig.add_trace(
     go.Candlestick(
         x=df.index,
@@ -285,36 +441,35 @@ fig.add_trace(
     )
 )
 
-# Show Major Pivot Dots
+# Major Pivot Dots
 if show_dots:
-  ph_filtered = df[df["PivotHigh"].notna()]
-  pl_filtered = df[df["PivotLow"].notna()]
-
+  ph_df = df[df["PivotHigh"].notna()]
+  pl_df = df[df["PivotLow"].notna()]
   fig.add_trace(
       go.Scatter(
-          x=ph_filtered.index,
-          y=ph_filtered["PivotHigh"],
+          x=ph_df.index,
+          y=ph_df["PivotHigh"],
           mode="markers",
-          marker=dict(size=10, color=bear_color),
-          name="Major High Pivot",
+          marker=dict(size=11, color=bear_color),
+          name="Major Swing High",
+      )
+  )
+  fig.add_trace(
+      go.Scatter(
+          x=pl_df.index,
+          y=pl_df["PivotLow"],
+          mode="markers",
+          marker=dict(size=11, color=bull_color),
+          name="Major Swing Low",
       )
   )
 
-  fig.add_trace(
-      go.Scatter(
-          x=pl_filtered.index,
-          y=pl_filtered["PivotLow"],
-          mode="markers",
-          marker=dict(size=10, color=bull_color),
-          name="Major Low Pivot",
-      )
-  )
-
-# Plot Equilibrium Line
+# Bounded Equilibrium Line (Mirrors Pine Script offset length behavior)
 if show_eq and not np.isnan(eq):
+  eq_start_idx = max(0, len(df) - 20)
   fig.add_shape(
       type="line",
-      x0=df.index[0],
+      x0=df.index[eq_start_idx],
       x1=df.index[-1],
       y0=eq,
       y1=eq,
@@ -329,27 +484,32 @@ if show_eq and not np.isnan(eq):
       xanchor="left",
   )
 
-# Plot BOS / Sweep Lines
+# BOS & Sweep Lines
 if show_lines:
-  for l_info in lines_to_plot:
-    line_color = (
-        bull_color
-        if "bull" in l_info["type"]
-        else (bear_color if "bear" in l_info["type"] else "gray")
-    )
-    line_dash = "dash" if "sweep" in l_info["type"] else "solid"
+  for x0, x1, y0, y1, col, is_dashed in lines_to_plot:
     fig.add_shape(
         type="line",
-        x0=l_info["x0"],
-        x1=l_info["x1"],
-        y0=l_info["y0"],
-        y1=l_info["y1"],
-        line=dict(color=line_color, width=1.5, dash=line_dash),
+        x0=x0,
+        x1=x1,
+        y0=y0,
+        y1=y1,
+        line=dict(
+            color=col, width=1.5, dash="dash" if is_dashed else "solid"
+        ),
+    )
+  for x0, x1, y0, y1, col in crt_sweeps:
+    fig.add_shape(
+        type="line",
+        x0=x0,
+        x1=x1,
+        y0=y0,
+        y1=y1,
+        line=dict(color=col, width=1, dash="dot"),
     )
 
 fig.update_layout(
-    title=f"{symbol} - ICT Structure & Liquidity Engine",
-    xaxis_title="Time",
+    title=f"{symbol} - Structure & Liquidity Engine",
+    xaxis_title="Timeline",
     yaxis_title="Price",
     template="plotly_dark",
     height=650,
