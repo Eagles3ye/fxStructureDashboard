@@ -1,0 +1,55 @@
+{
+  "AAPL": {
+    "last_alert": {
+      "Daily:bear": 1794422176.297316
+    },
+    "matches": [
+      "Daily:bear"
+    ]
+  },
+  "BTC-USD": {
+    "last_alert": {
+      "H4:bear": 1794422168.3964026
+    },
+    "matches": [
+      "H4:bear"
+    ]
+  },
+  "ETH-USD": {
+    "last_alert": {
+      "Weekly:bull": 1794422170.4568055
+    },
+    "matches": [
+      "Weekly:bull"
+    ]
+  },
+  "EURUSD=X": {
+    "last_alert": {},
+    "matches": []
+  },
+  "GC=F": {
+    "last_alert": {},
+    "matches": []
+  },
+  "MSFT": {
+    "last_alert": {
+      "Daily:bull": 1794422178.6481626
+    },
+    "matches": [
+      "Daily:bull"
+    ]
+  },
+  "TSLA": {
+    "last_alert": {
+      "Daily:bear": 1794422180.7078161,
+      "H4:bear": 1794422180.7078161,
+      "Weekly:bear": 1794422180.7078161
+    },
+    "matches": [
+      "Daily:bear",
+      "H4:bear",
+      "Weekly:bear"
+    ]
+  },
+  "_last_run": "2026-11-11 18:36:22 UTC"
+}
