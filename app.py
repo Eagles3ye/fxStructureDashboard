@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
 
 try:
@@ -58,6 +59,35 @@ major_len = st.sidebar.number_input(
 sweep_bars = st.sidebar.number_input(
     "CRT Sweep Look Bar Window", min_value=1, max_value=50, value=10, step=1
 )
+
+# --- Telegram Bot Sidebar Controls ---
+st.sidebar.subheader("📲 Telegram Confluence Alert Bot")
+TELEGRAM_BOT_TOKEN = st.sidebar.text_input(
+    "Telegram Bot Token", type="password", value=""
+)
+TELEGRAM_CHAT_ID = st.sidebar.text_input("Telegram Chat ID", value="")
+
+
+def send_telegram_alert(message):
+  if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    st.sidebar.warning(
+        "Please enter both Telegram Bot Token and Chat ID to send alerts."
+    )
+    return False
+
+  url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+  payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+  try:
+    response = requests.post(url, json=payload)
+    if response.status_code == 200:
+      return True
+    else:
+      st.sidebar.error(f"Telegram Error: {response.text}")
+      return False
+  except Exception as e:
+    st.sidebar.error(f"Exception: {e}")
+    return False
+
 
 st.sidebar.subheader("Chart Visual Toggles")
 show_dots = st.sidebar.checkbox("Show All Major Pivot Dots", value=True)
@@ -192,7 +222,6 @@ def get_bias_and_zone(data, length=3):
       else:
         ev = "Sweep Low"
 
-  # Calculate Zone (Premium / Discount) based on last established Dealing Range
   eq = (
       (last_sh + last_sl) / 2
       if not np.isnan(last_sh) and not np.isnan(last_sl)
@@ -262,19 +291,29 @@ def get_htf_macro_data(df_base):
     )
 
     m_b, m_e, m_z = (
-        get_bias_and_zone(df_m, 3) if len(df_m) > 7 else (0, "N/A", "N/A")
+        get_bias_and_zone(df_m, major_len)
+        if len(df_m) > 7
+        else (0, "N/A", "N/A")
     )
     w_b, w_e, w_z = (
-        get_bias_and_zone(df_w, 3) if len(df_w) > 7 else (0, "N/A", "N/A")
+        get_bias_and_zone(df_w, major_len)
+        if len(df_w) > 7
+        else (0, "N/A", "N/A")
     )
     d_b, d_e, d_z = (
-        get_bias_and_zone(df_d, 3) if len(df_d) > 7 else (0, "N/A", "N/A")
+        get_bias_and_zone(df_d, major_len)
+        if len(df_d) > 7
+        else (0, "N/A", "N/A")
     )
     h4_b, h4_e, h4_z = (
-        get_bias_and_zone(df_4h, 3) if len(df_4h) > 7 else (0, "N/A", "N/A")
+        get_bias_and_zone(df_4h, major_len)
+        if len(df_4h) > 7
+        else (0, "N/A", "N/A")
     )
     h1_b, h1_e, h1_z = (
-        get_bias_and_zone(df_1h, 3) if len(df_1h) > 7 else (0, "N/A", "N/A")
+        get_bias_and_zone(df_1h, major_len)
+        if len(df_1h) > 7
+        else (0, "N/A", "N/A")
     )
 
     return {
@@ -324,7 +363,6 @@ for i in range(len(df)):
     swing_l_break = False
     last_swing_l_time = dt
 
-  # BOS / Sweep Engine
   if not np.isnan(last_swing_high) and not swing_h_break and h > last_swing_high:
     if c > last_swing_high:
       swing_h_break = True
@@ -379,7 +417,6 @@ for i in range(len(df)):
             True,
         ))
 
-  # CRT Sweeps
   if i >= len(df) - sweep_bars and i > 0:
     crh = df["High"].iloc[i - 1]
     crl = df["Low"].iloc[i - 1]
@@ -396,7 +433,6 @@ for i in range(len(df)):
       if sweep_low:
         crt_sweeps.append((df.index[i - 1], dt, crl, crl, "#4B4B4B"))
 
-# Dealing Range & EQ calculations
 dealing_high = last_swing_high
 dealing_low = last_swing_low
 eq = (
@@ -431,7 +467,7 @@ with col3:
   )
   st.metric("Dynamic Target Objective", next_target)
 
-# Macro Alignment Table Display including Zone (Premium / Discount) and Monthly, Weekly, Daily
+# Macro Alignment Table Display
 st.markdown("### 🌐 Multi-Timeframe Macro Alignment Matrix (with Zones)")
 macro_cols = st.columns(5)
 tf_names = ["Monthly", "Weekly", "Daily", "H4", "H1"]
@@ -449,6 +485,60 @@ for idx, tf in enumerate(tf_names):
     st.markdown(
         f"**{tf}**\n\nEvent: `{e_str}`\n\nBias: {color_badge}\n\nZone: **{zone_badge}**",
         unsafe_allow_html=True,
+    )
+
+# --- Telegram Confluence Check Trigger Button ---
+st.markdown("---")
+st.subheader("🔔 Confluence Telegram Trigger")
+st.markdown(
+    "Click the button below to analyze Weekly, Daily, and H4 confluence ("
+    "Bullish Bias + Discount OR Bearish Bias + Premium) for **"
+    f"{symbol}** and send a Telegram alert if matched."
+)
+
+if st.button("🚀 Check Confluence & Send Telegram Alert"):
+  w_b, w_e, w_z = htf_data["Weekly"]
+  d_b, d_e, d_z = htf_data["Daily"]
+  h4_b, h4_e, h4_z = htf_data["H4"]
+
+  # Confluence Check across Weekly, Daily, H4
+  full_bullish = (
+      w_b == 1
+      and w_z == "DISCOUNT"
+      and d_b == 1
+      and d_z == "DISCOUNT"
+      and h4_b == 1
+      and h4_z == "DISCOUNT"
+  )
+  full_bearish = (
+      w_b == -1
+      and w_z == "PREMIUM"
+      and d_b == -1
+      and d_z == "PREMIUM"
+      h4_b == -1
+      and h4_z == "PREMIUM"
+  )
+
+  if full_bullish:
+    msg = (
+        f"🚨 *FULL BULLISH CONFLUENCE DETECTED* 🚨\n*Symbol:* `{symbol}`\n\n- Weekly:"
+        f" Bullish / Discount\n- Daily: Bullish / Discount\n- H4: Bullish /"
+        f" Discount\n\n_Setup primed for long entries!_"
+    )
+    if send_telegram_alert(msg):
+      st.success("Bullish Confluence match found! Telegram alert sent successfully.")
+  elif full_bearish:
+    msg = (
+        f"🚨 *FULL BEARISH CONFLUENCE DETECTED* 🚨\n*Symbol:* `{symbol}`\n\n- Weekly:"
+        f" Bearish / Premium\n- Daily: Bearish / Premium\n- H4: Bearish /"
+        f" Premium\n\n_Setup primed for short entries!_"
+    )
+    if send_telegram_alert(msg):
+      st.success("Bearish Confluence match found! Telegram alert sent successfully.")
+  else:
+    st.info(
+        "Checked Weekly, Daily, and H4. No full confluence match found at this"
+        " moment."
     )
 
 st.markdown("---")
