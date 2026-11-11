@@ -80,7 +80,6 @@ eq_color = st.sidebar.color_picker("Equilibrium (EQ) Color", value="#FFFF00")
 def load_data(ticker, period, interval):
   if YFINANCE_AVAILABLE:
     try:
-      # Fix interval for yfinance compatibility if 4h is selected
       yf_interval = "1h" if interval == "4h" else interval
       df = yf.download(
           ticker, period=period, interval=yf_interval, progress=False
@@ -193,7 +192,6 @@ def get_bias_state(data, length=3):
   return b, ev
 
 
-# Resample for HTF Macro table alignment
 def get_htf_bias(df_base):
   try:
     df_m = (
@@ -313,8 +311,8 @@ for i in range(len(df)):
             last_swing_high,
             last_swing_high,
             bull_color,
-            false,
-        ))
+            False,
+        ))  # Fixed: False instead of false
     else:
       last_event = "LIQUIDITY SWEEP HIGH (Wick)"
       next_target = "Target: EQ (50%) -> Range Low"
@@ -341,7 +339,7 @@ for i in range(len(df)):
             last_swing_low,
             bear_color,
             False,
-        ))
+        ))  # Fixed: False instead of false
     else:
       last_event = "LIQUIDITY SWEEP LOW (Wick)"
       next_target = "Target: EQ (50%) -> Range High"
@@ -355,7 +353,7 @@ for i in range(len(df)):
             True,
         ))
 
-  # CRT Sweeps (Lookback Window Logic matching Pine script `sweepBars`)
+  # CRT Sweeps
   if i >= len(df) - sweep_bars and i > 0:
     crh = df["High"].iloc[i - 1]
     crl = df["Low"].iloc[i - 1]
@@ -429,7 +427,6 @@ st.subheader("📈 Interactive Price & Structure Chart")
 
 fig = go.Figure()
 
-# Candlesticks
 fig.add_trace(
     go.Candlestick(
         x=df.index,
@@ -441,7 +438,6 @@ fig.add_trace(
     )
 )
 
-# Major Pivot Dots
 if show_dots:
   ph_df = df[df["PivotHigh"].notna()]
   pl_df = df[df["PivotLow"].notna()]
@@ -464,7 +460,6 @@ if show_dots:
       )
   )
 
-# Bounded Equilibrium Line (Mirrors Pine Script offset length behavior)
 if show_eq and not np.isnan(eq):
   eq_start_idx = max(0, len(df) - 20)
   fig.add_shape(
@@ -484,7 +479,6 @@ if show_eq and not np.isnan(eq):
       xanchor="left",
   )
 
-# BOS & Sweep Lines
 if show_lines:
   for x0, x1, y0, y1, col, is_dashed in lines_to_plot:
     fig.add_shape(
