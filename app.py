@@ -501,7 +501,7 @@ if st.button("🚀 Check Confluence & Send Telegram Alert"):
   d_b, d_e, d_z = htf_data["Daily"]
   h4_b, h4_e, h4_z = htf_data["H4"]
 
-  # Confluence Check across Weekly, Daily, H4
+ # Confluence Check across Weekly, Daily, H4
   full_bullish = (
       w_b == 1
       and w_z == "DISCOUNT"
@@ -515,9 +515,9 @@ if st.button("🚀 Check Confluence & Send Telegram Alert"):
       and w_z == "PREMIUM"
       and d_b == -1
       and d_z == "PREMIUM"
-      h4_b == -1
+      and h4_b == -1
       and h4_z == "PREMIUM"
-  )
+  )  # <-- Added missing 'and' here
 
   if full_bullish:
     msg = (
