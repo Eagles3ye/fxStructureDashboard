@@ -26,7 +26,6 @@ st.markdown(
 # --- Sidebar Inputs & Controls ---
 st.sidebar.header("⚙️ Configuration & Tickers")
 
-# Ticker Selection Dropdown + Custom Input
 ticker_options = [
     "AAPL",
     "MSFT",
@@ -133,7 +132,7 @@ if df.empty:
   st.stop()
 
 
-# --- Helper Functions: Pivot Engine & Bias Calculation ---
+# --- Helper Functions: Pivot Engine, Bias & Zone Calculation ---
 def calculate_pivots(data, length):
   highs = data["High"].values
   lows = data["Low"].values
@@ -154,13 +153,14 @@ def calculate_pivots(data, length):
   return data
 
 
-def get_bias_state(data, length=3):
+def get_bias_and_zone(data, length=3):
   if len(data) < (length * 2 + 1):
-    return 0, "Waiting"
+    return 0, "Waiting", "N/A"
   temp_df = calculate_pivots(data.copy(), length)
   hi, lo, b, ev = np.nan, np.nan, 0, "Waiting"
   hi_broken, lo_broken = False, False
 
+  last_sh, last_sl = np.nan, np.nan
   for i in range(len(temp_df)):
     ph = temp_df["PivotHigh"].iloc[i]
     pl = temp_df["PivotLow"].iloc[i]
@@ -170,9 +170,11 @@ def get_bias_state(data, length=3):
 
     if not np.isnan(ph):
       hi = ph
+      last_sh = ph
       hi_broken = False
     if not np.isnan(pl):
       lo = pl
+      last_sl = pl
       lo_broken = False
 
     if not np.isnan(hi) and not hi_broken and h > hi:
@@ -189,10 +191,24 @@ def get_bias_state(data, length=3):
         ev = "BOS Bearish"
       else:
         ev = "Sweep Low"
-  return b, ev
+
+  # Calculate Zone (Premium / Discount) based on last established Dealing Range
+  eq = (
+      (last_sh + last_sl) / 2
+      if not np.isnan(last_sh) and not np.isnan(last_sl)
+      else np.nan
+  )
+  current_close = temp_df["Close"].iloc[-1]
+  zone = (
+      "N/A"
+      if np.isnan(eq)
+      else ("PREMIUM" if current_close > eq else "DISCOUNT")
+  )
+
+  return b, ev, zone
 
 
-def get_htf_bias(df_base):
+def get_htf_macro_data(df_base):
   try:
     df_m = (
         df_base.resample("ME")
@@ -245,30 +261,40 @@ def get_htf_bias(df_base):
         .dropna()
     )
 
-    m_b, m_e = get_bias_state(df_m, 3) if len(df_m) > 7 else (0, "N/A")
-    w_b, w_e = get_bias_state(df_w, 3) if len(df_w) > 7 else (0, "N/A")
-    d_b, d_e = get_bias_state(df_d, 3) if len(df_d) > 7 else (0, "N/A")
-    h4_b, h4_e = get_bias_state(df_4h, 3) if len(df_4h) > 7 else (0, "N/A")
-    h1_b, h1_e = get_bias_state(df_1h, 3) if len(df_1h) > 7 else (0, "N/A")
+    m_b, m_e, m_z = (
+        get_bias_and_zone(df_m, 3) if len(df_m) > 7 else (0, "N/A", "N/A")
+    )
+    w_b, w_e, w_z = (
+        get_bias_and_zone(df_w, 3) if len(df_w) > 7 else (0, "N/A", "N/A")
+    )
+    d_b, d_e, d_z = (
+        get_bias_and_zone(df_d, 3) if len(df_d) > 7 else (0, "N/A", "N/A")
+    )
+    h4_b, h4_e, h4_z = (
+        get_bias_and_zone(df_4h, 3) if len(df_4h) > 7 else (0, "N/A", "N/A")
+    )
+    h1_b, h1_e, h1_z = (
+        get_bias_and_zone(df_1h, 3) if len(df_1h) > 7 else (0, "N/A", "N/A")
+    )
 
     return {
-        "Monthly": (m_b, m_e),
-        "Weekly": (w_b, w_e),
-        "Daily": (d_b, d_e),
-        "H4": (h4_b, h4_e),
-        "H1": (h1_b, h1_e),
+        "Monthly": (m_b, m_e, m_z),
+        "Weekly": (w_b, w_e, w_z),
+        "Daily": (d_b, d_e, d_z),
+        "H4": (h4_b, h4_e, h4_z),
+        "H1": (h1_b, h1_e, h1_z),
     }
   except Exception:
     return {
-        "Monthly": (0, "N/A"),
-        "Weekly": (0, "N/A"),
-        "Daily": (0, "N/A"),
-        "H4": (0, "N/A"),
-        "H1": (0, "N/A"),
+        "Monthly": (0, "N/A", "N/A"),
+        "Weekly": (0, "N/A", "N/A"),
+        "Daily": (0, "N/A", "N/A"),
+        "H4": (0, "N/A", "N/A"),
+        "H1": (0, "N/A", "N/A"),
     }
 
 
-htf_data = get_htf_bias(df)
+htf_data = get_htf_macro_data(df)
 
 # --- Main Chart Pivot & Structure Processing ---
 df = calculate_pivots(df, major_len)
@@ -312,7 +338,7 @@ for i in range(len(df)):
             last_swing_high,
             bull_color,
             False,
-        ))  # Fixed: False instead of false
+        ))
     else:
       last_event = "LIQUIDITY SWEEP HIGH (Wick)"
       next_target = "Target: EQ (50%) -> Range Low"
@@ -339,7 +365,7 @@ for i in range(len(df)):
             last_swing_low,
             bear_color,
             False,
-        ))  # Fixed: False instead of false
+        ))
     else:
       last_event = "LIQUIDITY SWEEP LOW (Wick)"
       next_target = "Target: EQ (50%) -> Range High"
@@ -405,18 +431,23 @@ with col3:
   )
   st.metric("Dynamic Target Objective", next_target)
 
-# Macro Alignment Table Display
-st.markdown("### 🌐 Multi-Timeframe Macro Alignment Matrix")
+# Macro Alignment Table Display including Zone (Premium / Discount) and Monthly, Weekly, Daily
+st.markdown("### 🌐 Multi-Timeframe Macro Alignment Matrix (with Zones)")
 macro_cols = st.columns(5)
 tf_names = ["Monthly", "Weekly", "Daily", "H4", "H1"]
 for idx, tf in enumerate(tf_names):
-  b_val, e_str = htf_data[tf]
+  b_val, e_str, z_str = htf_data[tf]
   color_badge = (
       "🟢 Bullish" if b_val == 1 else ("🔴 Bearish" if b_val == -1 else "⚪ Neutral")
   )
+  zone_badge = (
+      "🔴 PREMIUM"
+      if z_str == "PREMIUM"
+      else ("🟢 DISCOUNT" if z_str == "DISCOUNT" else "⚪ N/A")
+  )
   with macro_cols[idx]:
     st.markdown(
-        f"**{tf}**\n\nStatus: `{e_str}`\n\nBias: **{color_badge}**",
+        f"**{tf}**\n\nEvent: `{e_str}`\n\nBias: {color_badge}\n\nZone: **{zone_badge}**",
         unsafe_allow_html=True,
     )
 
