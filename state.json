@@ -3,9 +3,7 @@
     "last_alert": {
       "Daily:bear": 1794422176.297316
     },
-    "matches": [
-      "Daily:bear"
-    ]
+    "matches": []
   },
   "BTC-USD": {
     "last_alert": {
@@ -26,14 +24,20 @@
     "matches": []
   },
   "GC=F": {
-    "last_alert": {},
-    "matches": []
+    "last_alert": {
+      "Daily:bull": 1794476542.336637
+    },
+    "matches": [
+      "Daily:bull"
+    ]
   },
   "MSFT": {
     "last_alert": {
-      "Daily:bull": 1794422178.6481626
+      "Daily:bull": 1794476546.0965736
     },
-    "matches": []
+    "matches": [
+      "Daily:bull"
+    ]
   },
   "TSLA": {
     "last_alert": {
@@ -47,5 +51,5 @@
       "Weekly:bear"
     ]
   },
-  "_last_run": "2026-11-12 01:28:38 UTC"
+  "_last_run": "2026-11-12 09:42:29 UTC"
 }
