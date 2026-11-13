@@ -80,13 +80,29 @@ class DerivClient:
         self._req = 0
         self._last = 0.0
 
+    def endpoints(self) -> list:
+        """Newest public endpoint first (no app_id / login), legacy as fallback.
+        Override with env DERIV_WS_URL (a single full wss:// URL)."""
+        custom = os.environ.get("DERIV_WS_URL")
+        if custom:
+            return [custom]
+        return [
+            "wss://api.derivws.com/trading/v1/options/ws/public",
+            f"wss://ws.derivws.com/websockets/v3?app_id={self.app_id}",
+        ]
+
     def _connect(self):
         import websocket  # pip install websocket-client
 
-        self.ws = websocket.create_connection(
-            f"wss://ws.derivws.com/websockets/v3?app_id={self.app_id}",
-            timeout=self.timeout,
-        )
+        errors = []
+        for url in self.endpoints():
+            try:
+                self.ws = websocket.create_connection(url, timeout=self.timeout)
+                self.url = url
+                return
+            except Exception as exc:
+                errors.append(f"{url.split('?')[0]} -> {str(exc)[:120]}")
+        raise ConnectionError("Deriv connection failed: " + " | ".join(errors))
 
     def close(self):
         try:
@@ -277,6 +293,8 @@ def deriv_symbols() -> list:
     client = DerivClient()
     try:
         msg = client.request({"active_symbols": "brief", "product_type": "basic"})
+        if "error" in msg:  # newer API may not accept product_type
+            msg = client.request({"active_symbols": "brief"})
     finally:
         client.close()
     if "error" in msg:
