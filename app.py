@@ -37,6 +37,29 @@ if choice == "Custom...":
 else:
     symbol = choice
 
+with st.sidebar.expander("🔎 Find Deriv symbol codes"):
+    st.caption("Search, then copy the spec into Custom... or config.json")
+
+    @st.cache_data(ttl=3600, show_spinner="Asking Deriv for symbols...")
+    def _deriv_list():
+        return prov.deriv_symbols()
+
+    q = st.text_input("Search (e.g. gold, volatility, boom, eur)", key="dsym_q")
+    try:
+        rows = _deriv_list()
+        words = q.lower().split()
+        shown = [
+            r for r in rows
+            if all(w in f"{r['spec']} {r['name']} {r['market']} {r['submarket']}".lower() for w in words)
+        ]
+        st.caption(f"{len(shown)} of {len(rows)} symbols")
+        st.dataframe(
+            pd.DataFrame(shown)[["spec", "name", "market"]] if shown else pd.DataFrame(),
+            hide_index=True, use_container_width=True, height=300,
+        )
+    except Exception as exc:
+        st.error(f"Could not load Deriv symbols: {exc}")
+
 interval = st.sidebar.selectbox("Chart Timeframe", ["1d", "1h", "15m", "4h"], index=0)
 
 st.sidebar.subheader("Pivot Settings")
