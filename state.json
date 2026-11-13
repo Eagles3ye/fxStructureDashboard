@@ -25,9 +25,11 @@
   },
   "GC=F": {
     "last_alert": {
-      "Daily:bull": 1794476542.336637
+      "Daily:bull": 1794528490.4941115
     },
-    "matches": []
+    "matches": [
+      "Daily:bull"
+    ]
   },
   "MSFT": {
     "last_alert": {
@@ -49,5 +51,5 @@
       "Weekly:bear"
     ]
   },
-  "_last_run": "2026-11-12 18:08:53 UTC"
+  "_last_run": "2026-11-13 00:08:16 UTC"
 }
