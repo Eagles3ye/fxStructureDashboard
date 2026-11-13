@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import ict_engine as eng
+import providers as prov
 
 st.set_page_config(
     page_title="ICT Structure & Liquidity Sweep Engine [v6]",
@@ -22,10 +23,17 @@ st.markdown(
 
 # ---------------- Sidebar ----------------
 st.sidebar.header("⚙️ Configuration & Tickers")
-ticker_options = ["AAPL", "MSFT", "BTC-USD", "EURUSD=X", "GC=F", "TSLA", "ETH-USD", "Custom..."]
+ticker_options = [
+    "deriv:frxEURUSD", "deriv:frxGBPUSD", "deriv:frxXAUUSD", "deriv:frxXAGUSD",
+    "deriv:R_100", "deriv:BOOM1000", "deriv:CRASH1000",
+    "ccxt:kraken:BTC/USDT", "ccxt:kraken:ETH/USDT", "Custom...",
+]
 choice = st.sidebar.selectbox("Select Asset", ticker_options)
 if choice == "Custom...":
-    symbol = st.sidebar.text_input("Custom Ticker (Yahoo Finance format)", value="NVDA").upper()
+    symbol = st.sidebar.text_input(
+        "Custom spec", value="deriv:frxUSDJPY",
+        help="deriv:<code> | ccxt:<exchange>:<PAIR> | yf:<yahoo ticker>",
+    ).strip()
 else:
     symbol = choice
 
@@ -82,20 +90,20 @@ eq_color = st.sidebar.color_picker("Equilibrium (EQ) Color", "#FFFF00")
 
 
 # ---------------- Data ----------------
-@st.cache_data(ttl=900, show_spinner="Loading chart data...")
+@st.cache_data(ttl=60, show_spinner="Loading chart data...")
 def load_chart(sym, itv):
-    return eng.fetch_chart(sym, itv)
+    return prov.fetch_chart(sym, itv)
 
 
-@st.cache_data(ttl=900, show_spinner="Loading multi-timeframe data...")
+@st.cache_data(ttl=60, show_spinner="Loading multi-timeframe data...")
 def load_matrix(sym, strength_items):
-    frames = eng.fetch_tf_frames(sym)
+    frames = prov.fetch_tf_frames(sym)
     return eng.compute_matrix(frames, dict(strength_items))
 
 
 df = load_chart(symbol, interval)
 if df is None or df.empty:
-    st.error("No data retrieved for this asset/timeframe. Check the symbol (Yahoo format).")
+    st.error("No data for this asset/timeframe. Check the spec, e.g. deriv:frxEURUSD or ccxt:kraken:BTC/USDT.")
     st.stop()
 
 # ---------------- Main-chart analysis ----------------
