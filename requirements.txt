@@ -1,6 +1,8 @@
-streamlit
 numpy
 pandas
-plotly
+requests
+websocket-client
+ccxt
 yfinance
-streamlit-autorefresh
+plotly
+streamlit
