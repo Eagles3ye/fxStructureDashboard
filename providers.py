@@ -270,3 +270,20 @@ def fetch_chart(spec: str, interval: str) -> Optional[pd.DataFrame]:
     if kind == "ccxt":
         return _safe(lambda: _ccxt_base(rest[0], rest[1], interval, 1500))
     return eng.fetch_chart(rest[0], interval)
+
+
+def deriv_symbols() -> list:
+    """All tradable Deriv symbols: [{symbol, name, market, submarket}]."""
+    client = DerivClient()
+    try:
+        msg = client.request({"active_symbols": "brief", "product_type": "basic"})
+    finally:
+        client.close()
+    if "error" in msg:
+        raise RuntimeError(msg["error"].get("message", "Deriv error"))
+    return [
+        {"spec": f"deriv:{r['symbol']}", "name": r.get("display_name"),
+         "market": r.get("market"), "submarket": r.get("submarket")}
+        for r in sorted(msg.get("active_symbols", []),
+                        key=lambda x: (x.get("market", ""), x.get("symbol", "")))
+    ]
