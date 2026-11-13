@@ -1,8 +1,19 @@
 {
-  "symbols": ["BTC-USD", "ETH-USD", "EURUSD=X", "GC=F", "AAPL", "MSFT", "TSLA"],
+  "symbols": [
+    "deriv:frxEURUSD",
+    "deriv:frxGBPUSD",
+    "deriv:frxXAUUSD",
+    "deriv:frxXAGUSD",
+    "deriv:R_100",
+    "deriv:BOOM1000",
+    "deriv:CRASH1000",
+    "ccxt:kraken:BTC/USDT",
+    "ccxt:kraken:ETH/USDT"
+  ],
   "timeframes": ["Weekly", "Daily", "H4"],
   "min_match": 1,
   "cooldown_hours": 4,
+  "poll_seconds": 60,
   "strengths": {
     "Monthly": 3, "Weekly": 3, "Daily": 3, "H4": 3, "H1": 3, "M15": 3
   }
